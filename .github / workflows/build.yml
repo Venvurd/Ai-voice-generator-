@@ -31,4 +31,3 @@ jobs:
       with:
         name: ImageGenerator-APK
         path: app/build/outputs/apk/debug/*.apk
-
