@@ -1,0 +1,1978 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kokoro Voice Generator</title>
+    <style>
+        /* CSS Variables for Slate Dark Design */
+        :root {
+            --bg-primary: #0f172a;
+            --bg-secondary: #1e293b;
+            --bg-tertiary: #334155;
+            --primary: #6366f1;
+            --primary-hover: #4f46e5;
+            --primary-light: #818cf8;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --text-dark: #64748b;
+            --accent-green: #10b981;
+            --accent-green-hover: #059669;
+            --accent-red: #ef4444;
+            --accent-red-hover: #dc2626;
+            --border-color: #334155;
+            --focus-outline: #818cf8;
+            --card-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            --transition-speed: 0.2s;
+        }
+
+        /* Basic Resets & Scrollbars */
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            background-color: var(--bg-primary);
+            color: var(--text-main);
+            height: 100vh;
+            display: flex;
+            overflow: hidden;
+        }
+
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--bg-primary);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--bg-tertiary);
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-dark);
+        }
+
+        /* Main App Layout */
+        .app-container {
+            display: flex;
+            width: 100%;
+            height: 100%;
+            position: relative;
+        }
+
+        /* Sidebar Style */
+        .sidebar {
+            width: 320px;
+            background-color: var(--bg-secondary);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            transition: transform var(--transition-speed) ease-in-out;
+            z-index: 100;
+        }
+
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .sidebar-header svg {
+            width: 28px;
+            height: 28px;
+            color: var(--primary);
+        }
+
+        .logo-text {
+            font-size: 1.25rem;
+            font-weight: 700;
+            letter-spacing: -0.025em;
+            background: linear-gradient(to right, var(--primary-light), #a5b4fc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .new-chat-btn-container {
+            padding: 16px;
+        }
+
+        .btn-primary {
+            width: 100%;
+            padding: 12px 16px;
+            background-color: var(--primary);
+            color: var(--text-main);
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 0.95rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: background-color var(--transition-speed);
+            box-shadow: var(--card-shadow);
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            background-color: var(--primary-hover);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .chat-list {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 0 8px 16px 8px;
+        }
+
+        .chat-item {
+            display: flex;
+            align-items: center;
+            padding: 10px 12px;
+            border-radius: 8px;
+            cursor: pointer;
+            margin-bottom: 4px;
+            gap: 10px;
+            transition: background-color var(--transition-speed);
+            user-select: none;
+            position: relative;
+            group: true;
+        }
+
+        .chat-item:hover {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+
+        .chat-item.active {
+            background-color: rgba(99, 102, 241, 0.15);
+            border-left: 3px solid var(--primary);
+        }
+
+        .chat-item-icon {
+            color: var(--text-muted);
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+        }
+
+        .chat-item.active .chat-item-icon {
+            color: var(--primary-light);
+        }
+
+        .chat-item-title-container {
+            flex-grow: 1;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+        }
+
+        .chat-item-title {
+            font-size: 0.9rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            width: 100%;
+        }
+
+        .chat-item-input {
+            width: 100%;
+            background-color: var(--bg-primary);
+            color: var(--text-main);
+            border: 1px solid var(--primary);
+            border-radius: 4px;
+            padding: 2px 6px;
+            font-size: 0.9rem;
+            outline: none;
+        }
+
+        .chat-delete-btn {
+            background: none;
+            border: none;
+            color: var(--text-dark);
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 4px;
+            opacity: 0;
+            transition: opacity var(--transition-speed), color var(--transition-speed);
+            display: flex;
+            align-items: center;
+        }
+
+        .chat-item:hover .chat-delete-btn,
+        .chat-item.active .chat-delete-btn {
+            opacity: 1;
+        }
+
+        .chat-delete-btn:hover {
+            color: var(--accent-red);
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+
+        /* Workspace Layout */
+        .workspace {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            background-color: var(--bg-primary);
+            overflow-y: auto;
+            position: relative;
+        }
+
+        .workspace-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 24px;
+            border-bottom: 1px solid var(--border-color);
+            background-color: var(--bg-secondary);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .menu-toggle-btn {
+            display: none;
+            background: none;
+            border: none;
+            color: var(--text-main);
+            cursor: pointer;
+            padding: 8px;
+            border-radius: 8px;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .menu-toggle-btn:hover {
+            background-color: var(--bg-tertiary);
+        }
+
+        .active-chat-heading {
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+
+        .engine-status-badge {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.8rem;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-weight: 500;
+            background-color: rgba(244, 63, 94, 0.1);
+            color: #fda4af;
+            border: 1px solid rgba(244, 63, 94, 0.2);
+        }
+
+        .engine-status-badge.ready {
+            background-color: rgba(16, 185, 129, 0.1);
+            color: #6ee7b7;
+            border: 1px solid rgba(16, 185, 129, 0.2);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--accent-red);
+        }
+
+        .ready .status-dot {
+            background-color: var(--accent-green);
+            box-shadow: 0 0 8px var(--accent-green);
+        }
+
+        .workspace-content {
+            padding: 24px;
+            max-width: 900px;
+            width: 100%;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        /* Styling Cards */
+        .card {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: var(--card-shadow);
+        }
+
+        .card-title {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: var(--text-main);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* Textarea Counter Section */
+        .textarea-wrapper {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .text-input-label {
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+        }
+
+        .text-generator-area {
+            width: 100%;
+            min-height: 160px;
+            background-color: var(--bg-primary);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 12px 14px;
+            font-size: 0.95rem;
+            line-height: 1.5;
+            resize: vertical;
+            outline: none;
+            transition: border-color var(--transition-speed);
+        }
+
+        .text-generator-area:focus {
+            border-color: var(--primary);
+        }
+
+        .textarea-info-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 8px;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .char-counter {
+            font-weight: 500;
+        }
+
+        .char-counter.warning {
+            color: var(--accent-red);
+        }
+
+        .clear-text-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 0.8rem;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .clear-text-btn:hover {
+            color: var(--text-main);
+        }
+
+        /* Controls / Parameter Card */
+        .controls-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .control-label {
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--text-muted);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .select-input {
+            width: 100%;
+            padding: 10px 12px;
+            background-color: var(--bg-primary);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            font-size: 0.9rem;
+            outline: none;
+            cursor: pointer;
+            transition: border-color var(--transition-speed);
+        }
+
+        .select-input:focus {
+            border-color: var(--primary);
+        }
+
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .slider-input {
+            flex-grow: 1;
+            height: 6px;
+            background: var(--bg-primary);
+            border-radius: 3px;
+            outline: none;
+            cursor: pointer;
+            -webkit-appearance: none;
+        }
+
+        .slider-input::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--primary);
+            cursor: pointer;
+            transition: transform var(--transition-speed);
+        }
+
+        .slider-input::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+            background: var(--primary-light);
+        }
+
+        .slider-value {
+            font-size: 0.9rem;
+            font-weight: 600;
+            width: 36px;
+            text-align: right;
+        }
+
+        /* Actions Bar */
+        .actions-row {
+            display: flex;
+            gap: 12px;
+            margin-top: 8px;
+        }
+
+        .btn-success {
+            flex-grow: 1;
+            background-color: var(--accent-green);
+        }
+
+        .btn-success:hover:not(:disabled) {
+            background-color: var(--accent-green-hover);
+        }
+
+        .btn-danger {
+            background-color: var(--accent-red);
+            padding: 12px 24px;
+        }
+
+        .btn-danger:hover:not(:disabled) {
+            background-color: var(--accent-red-hover);
+        }
+
+        /* Custom Audio Player */
+        .audio-player-card {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .player-controls-row {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .btn-icon {
+            background: var(--bg-tertiary);
+            border: none;
+            color: var(--text-main);
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background-color var(--transition-speed), transform 0.1s;
+        }
+
+        .btn-icon:hover:not(:disabled) {
+            background-color: var(--primary);
+            transform: scale(1.05);
+        }
+
+        .btn-icon:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .seek-container {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .seek-bar {
+            width: 100%;
+            height: 4px;
+            background: var(--bg-primary);
+            border-radius: 2px;
+            outline: none;
+            cursor: pointer;
+            -webkit-appearance: none;
+        }
+
+        .seek-bar::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--primary-light);
+            cursor: pointer;
+        }
+
+        .time-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .volume-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: 120px;
+        }
+
+        .volume-slider {
+            width: 70px;
+            height: 4px;
+            background: var(--bg-primary);
+            border-radius: 2px;
+            outline: none;
+            cursor: pointer;
+            -webkit-appearance: none;
+        }
+
+        .volume-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--text-muted);
+            cursor: pointer;
+        }
+
+        /* History Panel */
+        .history-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 280px;
+            overflow-y: auto;
+        }
+
+        .history-item {
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 10px 14px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            transition: border-color var(--transition-speed);
+        }
+
+        .history-item.playing-item {
+            border-color: var(--primary);
+            background-color: rgba(99, 102, 241, 0.05);
+        }
+
+        .history-details {
+            flex-grow: 1;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .history-text {
+            font-size: 0.85rem;
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .history-meta {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            display: flex;
+            gap: 10px;
+        }
+
+        .history-meta-voice {
+            color: var(--primary-light);
+            font-weight: 600;
+        }
+
+        .history-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-history-action {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 6px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: color var(--transition-speed), background-color var(--transition-speed);
+        }
+
+        .btn-history-action:hover {
+            color: var(--text-main);
+            background-color: var(--bg-tertiary);
+        }
+
+        .btn-history-action.play-pause-clip {
+            color: var(--accent-green);
+        }
+
+        .btn-history-action.play-pause-clip:hover {
+            background-color: rgba(16, 185, 129, 0.1);
+        }
+
+        .btn-history-action.delete-clip:hover {
+            color: var(--accent-red);
+            background-color: rgba(239, 68, 68, 0.1);
+        }
+
+        .empty-history-text {
+            font-size: 0.85rem;
+            color: var(--text-dark);
+            text-align: center;
+            padding: 16px;
+            border: 1px dashed var(--border-color);
+            border-radius: 8px;
+        }
+
+        /* Model Loading Overlay Screen */
+        .overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(15, 23, 42, 0.95);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 999;
+            padding: 24px;
+            text-align: center;
+            transition: opacity var(--transition-speed) ease-in-out, visibility var(--transition-speed);
+        }
+
+        .overlay.hidden {
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+        }
+
+        .loader-card {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 32px;
+            width: 100%;
+            max-width: 480px;
+            box-shadow: 0 10px 25px -5px rgba(0,0,0,0.3);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .loader-icon-anim {
+            width: 48px;
+            height: 48px;
+            color: var(--primary);
+            animation: spin 2s linear infinite;
+        }
+
+        @keyframes spin {
+            100% { transform: rotate(360deg); }
+        }
+
+        .loader-title {
+            font-size: 1.25rem;
+            font-weight: 700;
+        }
+
+        .loader-desc {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            line-height: 1.5;
+        }
+
+        .progress-bar-container {
+            width: 100%;
+            height: 8px;
+            background-color: var(--bg-primary);
+            border-radius: 4px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(to right, var(--primary), var(--primary-light));
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+
+        .progress-percentage {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--primary-light);
+        }
+
+        .loader-skip-btn {
+            background: none;
+            border: 1px solid var(--border-color);
+            color: var(--text-muted);
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: border-color var(--transition-speed), color var(--transition-speed);
+        }
+
+        .loader-skip-btn:hover {
+            border-color: var(--text-muted);
+            color: var(--text-main);
+        }
+
+        /* Sidebar overlay for mobile */
+        .sidebar-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            z-index: 90;
+        }
+
+        /* Error Banner */
+        .error-banner {
+            background-color: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            color: #fca5a5;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            margin-bottom: 16px;
+            display: none;
+            align-items: flex-start;
+            gap: 10px;
+        }
+
+        /* Responsive Breakpoints */
+        @media (max-width: 768px) {
+            .sidebar {
+                position: fixed;
+                top: 0;
+                left: 0;
+                bottom: 0;
+                transform: translateX(-100%);
+            }
+
+            .sidebar.open {
+                transform: translateX(0);
+            }
+
+            .sidebar-overlay.visible {
+                display: block;
+            }
+
+            .menu-toggle-btn {
+                display: flex;
+            }
+
+            .workspace-header {
+                padding: 12px 16px;
+            }
+
+            .workspace-content {
+                padding: 16px;
+            }
+
+            .controls-grid {
+                grid-template-columns: 1fr;
+                gap: 16px;
+            }
+
+            .volume-container {
+                display: none; /* Hide volume on mobile as hardware is preferred */
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="app-container">
+        <!-- Sidebar Backdrop for mobile -->
+        <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+        <!-- Sidebar / Drawer -->
+        <aside class="sidebar" id="app-sidebar">
+            <div class="sidebar-header">
+                <!-- Speech Wave Logo SVG -->
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 0 0 6-6v-1.5m-6 7.5a6 6 0 0 1-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 0 1-3-3V4.5a3 3 0 1 1 6 0v8.25a3 3 0 0 1-3 3Z" />
+                </svg>
+                <span class="logo-text">Kokoro Voice</span>
+            </div>
+
+            <div class="new-chat-btn-container">
+                <button class="btn-primary" id="new-chat-btn">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 18px; height: 18px;">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                    </svg>
+                    New Voice Note
+                </button>
+            </div>
+
+            <!-- Chat / Notes History List -->
+            <div class="chat-list" id="chat-list-container">
+                <!-- Populated dynamically via JS -->
+            </div>
+        </aside>
+
+        <!-- Main Workspace -->
+        <main class="workspace">
+            <header class="workspace-header">
+                <div class="header-left">
+                    <button class="menu-toggle-btn" id="menu-toggle" aria-label="Toggle Sidebar">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 24px; height: 24px;">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+                        </svg>
+                    </button>
+                    <h2 class="active-chat-heading" id="active-chat-heading">Workspace Loading...</h2>
+                </div>
+                <div class="engine-status-badge" id="engine-status">
+                    <span class="status-dot"></span>
+                    <span id="engine-status-text">Engine Offline</span>
+                </div>
+            </header>
+
+            <div class="workspace-content">
+                <!-- Error Alert Box -->
+                <div class="error-banner" id="error-banner">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 20px; height: 20px; flex-shrink: 0;">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
+                    </svg>
+                    <span id="error-banner-message">An error occurred.</span>
+                </div>
+
+                <!-- Input & TTS Form Card -->
+                <section class="card">
+                    <div class="textarea-wrapper">
+                        <label for="text-to-synthesize" class="text-input-label">Text to Synthesize</label>
+                        <textarea class="text-generator-area" id="text-to-synthesize" maxlength="5000" placeholder="Type or paste text to generate speech..."></textarea>
+                        <div class="textarea-info-row">
+                            <span class="char-counter" id="char-counter">0 / 5000</span>
+                            <button class="clear-text-btn" id="clear-text-btn">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width: 14px; height: 14px;">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M9.75 9.75l4.5 4.5m0-4.5l-4.5 4.5M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                Clear Text
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="controls-grid" style="margin-top: 20px;">
+                        <!-- Voice Dropdown -->
+                        <div class="control-group">
+                            <label class="control-label" for="voice-select">Voice Model</label>
+                            <select class="select-input" id="voice-select">
+                                <option value="af_heart" selected>Heart (Female - US)</option>
+                                <option value="af_bella">Bella (Female - US)</option>
+                                <option value="af_nicole">Nicole (Female - US)</option>
+                                <option value="af_sky">Sky (Female - US)</option>
+                                <option value="am_adam">Adam (Male - US)</option>
+                                <option value="am_michael">Michael (Male - US)</option>
+                                <option value="bf_emma">Emma (Female - UK)</option>
+                                <option value="bf_isabella">Isabella (Female - UK)</option>
+                                <option value="bm_george">George (Male - UK)</option>
+                                <option value="bm_lewis">Lewis (Male - UK)</option>
+                            </select>
+                        </div>
+
+                        <!-- Playback Speed Slider -->
+                        <div class="control-group">
+                            <label class="control-label">
+                                <span>Playback Speed</span>
+                                <span class="slider-value" id="speed-value">1.0x</span>
+                            </label>
+                            <div class="slider-container" style="height: 100%; display: flex; align-items: center;">
+                                <input type="range" class="slider-input" id="speed-slider" min="0.5" max="2" step="0.1" value="1.0">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Synthesis Control Actions -->
+                    <div class="actions-row">
+                        <button class="btn-primary btn-success" id="generate-btn">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 18px; height: 18px;" id="gen-btn-icon">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z" />
+                            </svg>
+                            <span id="generate-btn-text">Generate Speech</span>
+                        </button>
+                        <button class="btn-primary btn-danger" id="cancel-btn" style="display: none;">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 18px; height: 18px;">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M5.25 7.5A2.25 2.25 0 0 1 7.5 5.25h9a2.25 2.25 0 0 1 2.25 2.25v9a2.25 2.25 0 0 1-2.25 2.25h-9a2.25 2.25 0 0 1-2.25-2.25v-9Z" />
+                            </svg>
+                            Cancel
+                        </button>
+                    </div>
+                </section>
+
+                <!-- Audio Controller Card -->
+                <section class="card audio-player-card">
+                    <h3 class="card-title">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 20px; height: 20px;">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 0 1 0 12.728M16.463 8.288a5.25 5.25 0 0 1 0 7.424M6.75 8.25l4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z" />
+                        </svg>
+                        Audio Player
+                    </h3>
+
+                    <div class="player-controls-row">
+                        <!-- Play/Pause Button -->
+                        <button class="btn-icon" id="player-play-btn" disabled aria-label="Play">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" style="width: 20px; height: 20px;" id="player-play-icon">
+                                <path d="M8 5v14l11-7z" />
+                            </svg>
+                        </button>
+
+                        <!-- Seek Slider -->
+                        <div class="seek-container">
+                            <input type="range" class="seek-bar" id="player-seek" min="0" max="100" value="0" disabled>
+                            <div class="time-labels">
+                                <span id="time-current">00:00</span>
+                                <span id="time-duration">00:00</span>
+                            </div>
+                        </div>
+
+                        <!-- Volume Controls -->
+                        <div class="volume-container">
+                            <button class="btn-history-action" id="player-mute-btn" disabled aria-label="Mute">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 20px; height: 20px;" id="player-mute-icon">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 0 1 0 12.728M16.463 8.288a5.25 5.25 0 0 1 0 7.424M6.75 8.25l4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z" />
+                                </svg>
+                            </button>
+                            <input type="range" class="volume-slider" id="player-volume" min="0" max="1" step="0.05" value="1" disabled>
+                        </div>
+
+                        <!-- Download WAV -->
+                        <button class="btn-icon" id="player-download-btn" disabled title="Download WAV File" aria-label="Download">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 20px; height: 20px;">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                            </svg>
+                        </button>
+                    </div>
+                </section>
+
+                <!-- History of Generated Audios Card -->
+                <section class="card">
+                    <h3 class="card-title">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 20px; height: 20px;">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                        </svg>
+                        Generated Clips
+                    </h3>
+                    <div class="history-list" id="history-list-container">
+                        <!-- Populated dynamically via JS -->
+                        <div class="empty-history-text">No clips generated in this workspace yet. Click Generate above to create some!</div>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <!-- Hidden native audio element -->
+    <audio id="native-audio" style="display: none;"></audio>
+
+    <!-- First Load Loader Overlay -->
+    <div class="overlay" id="loading-overlay">
+        <div class="loader-card">
+            <!-- Animated Spiral Loader SVG -->
+            <svg class="loader-icon-anim" viewBox="0 0 50 50">
+                <circle cx="25" cy="25" r="20" fill="none" stroke="currentColor" stroke-width="4" stroke-dasharray="31.4 31.4" stroke-linecap="round"></circle>
+            </svg>
+            <h3 class="loader-title">Loading AI Voice Model</h3>
+            <p class="loader-desc">
+                We are downloading the high-fidelity <strong>Kokoro-82M ONNX model</strong> directly to your device. This process happens once. The model (~80MB) will be cached securely in your browser storage for instant future use.
+            </p>
+            <div class="progress-bar-container">
+                <div class="progress-bar-fill" id="load-progress-fill"></div>
+            </div>
+            <div class="progress-percentage" id="load-progress-text">0% (Connecting...)</div>
+            <button class="loader-skip-btn" id="loader-skip-btn">Inspect Interface</button>
+        </div>
+    </div>
+
+    <!-- MAIN APP CONTROLLER CODE -->
+    <script type="module">
+        // 1. EXACT CDN IMPORT
+        import { KokoroTTS } from 'https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js';
+
+        // State variables
+        let tts = null;
+        let chats = [];
+        let activeChatId = null;
+        let isGenerating = false;
+        let generationAborted = false;
+        let currentLoadedClipId = null; // Track loaded history item
+
+        // UI references
+        const nativeAudio = document.getElementById('native-audio');
+        const textInput = document.getElementById('text-to-synthesize');
+        const charCounter = document.getElementById('char-counter');
+        const clearTextBtn = document.getElementById('clear-text-btn');
+        const voiceSelect = document.getElementById('voice-select');
+        const speedSlider = document.getElementById('speed-slider');
+        const speedValueText = document.getElementById('speed-value');
+        const generateBtn = document.getElementById('generate-btn');
+        const generateBtnText = document.getElementById('generate-btn-text');
+        const cancelBtn = document.getElementById('cancel-btn');
+        const errorBanner = document.getElementById('error-banner');
+        const errorBannerMsg = document.getElementById('error-banner-message');
+
+        // Player Controls references
+        const playBtn = document.getElementById('player-play-btn');
+        const playIcon = document.getElementById('player-play-icon');
+        const seekSlider = document.getElementById('player-seek');
+        const timeCurrent = document.getElementById('time-current');
+        const timeDuration = document.getElementById('time-duration');
+        const muteBtn = document.getElementById('player-mute-btn');
+        const muteIcon = document.getElementById('player-mute-icon');
+        const volumeSlider = document.getElementById('player-volume');
+        const downloadBtn = document.getElementById('player-download-btn');
+
+        // Chat List / Workspace references
+        const newChatBtn = document.getElementById('new-chat-btn');
+        const chatListContainer = document.getElementById('chat-list-container');
+        const activeChatHeading = document.getElementById('active-chat-heading');
+        const engineStatusBadge = document.getElementById('engine-status');
+        const engineStatusText = document.getElementById('engine-status-text');
+
+        // Loader Overlay references
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const loadProgressFill = document.getElementById('load-progress-fill');
+        const loadProgressText = document.getElementById('load-progress-text');
+        const skipBtn = document.getElementById('loader-skip-btn');
+
+        // Sidebar drawer references
+        const menuToggle = document.getElementById('menu-toggle');
+        const appSidebar = document.getElementById('app-sidebar');
+        const sidebarOverlay = document.getElementById('sidebar-overlay');
+
+        // SVG Icons used programmatically
+        const PLAY_SVG_PATH = 'M8 5v14l11-7z';
+        const PAUSE_SVG_PATH = 'M6 19h4V5H6v14zm8-14v14h4V5h-4z';
+
+        // ----------------------------------------------------
+        // INITIALIZATION & LIFECYCLE
+        // ----------------------------------------------------
+        
+        window.addEventListener('DOMContentLoaded', () => {
+            loadChatsFromStorage();
+            renderChatList();
+            setupEventListeners();
+            initEngine();
+        });
+
+        // Initialize Kokoro TTS model asynchronously
+        async function initEngine() {
+            // Simulated fake progress bar to reassure users during the 80MB model download
+            let loadPercentage = 0;
+            const progressInterval = setInterval(() => {
+                if (loadPercentage < 90) {
+                    loadPercentage += Math.random() * 5;
+                    if (loadPercentage > 90) loadPercentage = 90;
+                    updateLoadProgress(Math.floor(loadPercentage), "Downloading model assets...");
+                }
+            }, 800);
+
+            try {
+                updateLoadProgress(5, "Connecting to server...");
+                
+                // Load Model
+                tts = await KokoroTTS.from_pretrained(
+                    'onnx-community/Kokoro-82M-v1.0-ONNX',
+                    { dtype: 'q8' }
+                );
+
+                clearInterval(progressInterval);
+                updateLoadProgress(100, "Kokoro Model Ready!");
+                
+                // Make status badge active
+                engineStatusBadge.classList.add('ready');
+                engineStatusText.textContent = "Engine Ready";
+
+                // Fade out loader overlay
+                setTimeout(() => {
+                    loadingOverlay.classList.add('hidden');
+                }, 800);
+
+            } catch (err) {
+                clearInterval(progressInterval);
+                console.error("Initialization error:", err);
+                showError("Failed to download or load model. Check your internet connection and try reloading. Details: " + err.message);
+                updateLoadProgress(0, "Error loading model");
+            }
+        }
+
+        function updateLoadProgress(percentage, text) {
+            loadProgressFill.style.width = percentage + "%";
+            loadProgressText.textContent = percentage + "% (" + text + ")";
+        }
+
+        // ----------------------------------------------------
+        // STORAGE & DATA PERSISTENCE
+        // ----------------------------------------------------
+
+        function loadChatsFromStorage() {
+            try {
+                const stored = localStorage.getItem('kokoro_voice_chats');
+                if (stored) {
+                    chats = JSON.parse(stored);
+                } else {
+                    // Seed initial demo chat
+                    chats = [
+                        {
+                            id: 'chat_default',
+                            title: 'Welcome Note',
+                            text: 'Welcome to Kokoro Voice! Kokoro is a lightweight, high-quality offline-first text-to-speech model. You can write any text in this area (up to 5000 characters), select one of our premium voice configurations (including American male/female and British male/female models), adjust the playback speed, and hit "Generate Speech" to generate stunning human-like audio.',
+                            voice: 'af_bella',
+                            speed: 1.0,
+                            history: []
+                        }
+                    ];
+                    saveChatsToStorage();
+                }
+
+                // Restore active chat selection
+                const storedActiveId = localStorage.getItem('kokoro_active_chat_id');
+                if (storedActiveId && chats.some(c => c.id === storedActiveId)) {
+                    activeChatId = storedActiveId;
+                } else if (chats.length > 0) {
+                    activeChatId = chats[0].id;
+                } else {
+                    activeChatId = null;
+                }
+
+                loadActiveChatIntoUI();
+            } catch (err) {
+                console.error("Error reading localStorage", err);
+                showError("Could not retrieve workspace chats from browser storage.");
+            }
+        }
+
+        function saveChatsToStorage() {
+            try {
+                localStorage.setItem('kokoro_voice_chats', JSON.stringify(chats));
+                if (activeChatId) {
+                    localStorage.setItem('kokoro_active_chat_id', activeChatId);
+                } else {
+                    localStorage.removeItem('kokoro_active_chat_id');
+                }
+            } catch (err) {
+                console.error("Error writing localStorage", err);
+                showError("Local storage is full or disabled. Generated audio cache cannot be saved.");
+            }
+        }
+
+        // ----------------------------------------------------
+        // UI RENDERING & COMPONENT SYNC
+        // ----------------------------------------------------
+
+        function renderChatList() {
+            chatListContainer.innerHTML = '';
+            chats.forEach(chat => {
+                const isSelected = chat.id === activeChatId;
+                
+                const item = document.createElement('div');
+                item.className = 'chat-item' + (isSelected ? ' active' : '');
+                item.dataset.id = chat.id;
+
+                // Speech/Chat icon SVG
+                const iconContainer = document.createElement('div');
+                iconContainer.className = 'chat-item-icon';
+                iconContainer.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 18px; height: 18px;">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 0 0 6-6v-1.5m-6 7.5a6 6 0 0 1-6-6v-1.5m6 7.5v3.75" />
+                    </svg>
+                `;
+
+                const titleContainer = document.createElement('div');
+                titleContainer.className = 'chat-item-title-container';
+                
+                const titleLabel = document.createElement('span');
+                titleLabel.className = 'chat-item-title';
+                titleLabel.textContent = chat.title;
+                titleContainer.appendChild(titleLabel);
+
+                const deleteBtn = document.createElement('button');
+                deleteBtn.className = 'chat-delete-btn';
+                deleteBtn.title = "Delete Chat";
+                deleteBtn.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 14px; height: 14px;">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
+                    </svg>
+                `;
+
+                // Handle item select click
+                item.addEventListener('click', (e) => {
+                    if (e.target.closest('.chat-delete-btn') || e.target.closest('.chat-item-input')) return;
+                    selectChat(chat.id);
+                });
+
+                // Double Click inline rename
+                item.addEventListener('dblclick', () => {
+                    const input = document.createElement('input');
+                    input.className = 'chat-item-input';
+                    input.type = 'text';
+                    input.value = chat.title;
+                    
+                    titleContainer.innerHTML = '';
+                    titleContainer.appendChild(input);
+                    input.focus();
+                    input.select();
+
+                    const finishRename = () => {
+                        const newTitle = input.value.trim() || chat.title;
+                        chat.title = newTitle;
+                        saveChatsToStorage();
+                        renderChatList();
+                        if (chat.id === activeChatId) {
+                            activeChatHeading.textContent = newTitle;
+                        }
+                    };
+
+                    input.addEventListener('keydown', (e) => {
+                        if (e.key === 'Enter') finishRename();
+                        if (e.key === 'Escape') renderChatList();
+                    });
+
+                    input.addEventListener('blur', finishRename);
+                });
+
+                // Delete click handler
+                deleteBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    deleteChat(chat.id);
+                });
+
+                item.appendChild(iconContainer);
+                item.appendChild(titleContainer);
+                item.appendChild(deleteBtn);
+                chatListContainer.appendChild(item);
+            });
+        }
+
+        function loadActiveChatIntoUI() {
+            if (!activeChatId) {
+                // UI default state
+                activeChatHeading.textContent = "No Workspace Open";
+                textInput.value = "";
+                textInput.disabled = true;
+                voiceSelect.disabled = true;
+                speedSlider.disabled = true;
+                generateBtn.disabled = true;
+                clearTextBtn.style.display = 'none';
+                renderHistory([]);
+                unloadAudioPlayer();
+                return;
+            }
+
+            const chat = chats.find(c => c.id === activeChatId);
+            if (!chat) return;
+
+            activeChatHeading.textContent = chat.title;
+            textInput.value = chat.text || "";
+            textInput.disabled = false;
+            voiceSelect.disabled = false;
+            speedSlider.disabled = false;
+            generateBtn.disabled = false;
+            clearTextBtn.style.display = 'flex';
+            
+            // Sync voice and speed values
+            voiceSelect.value = chat.voice || "af_bella";
+            speedSlider.value = chat.speed || 1.0;
+            speedValueText.textContent = Number(speedSlider.value).toFixed(1) + "x";
+
+            // Character count sync
+            updateCharacterCount();
+
+            // Render custom history and unload player if needed
+            renderHistory(chat.history || []);
+            unloadAudioPlayer();
+        }
+
+        function updateCharacterCount() {
+            const count = textInput.value.length;
+            charCounter.textContent = count + " / 5000";
+            if (count >= 4900) {
+                charCounter.classList.add('warning');
+            } else {
+                charCounter.classList.remove('warning');
+            }
+        }
+
+        function selectChat(id) {
+            // Save state of current active chat first
+            if (activeChatId) {
+                const currentChat = chats.find(c => c.id === activeChatId);
+                if (currentChat) {
+                    currentChat.text = textInput.value;
+                    currentChat.voice = voiceSelect.value;
+                    currentChat.speed = parseFloat(speedSlider.value);
+                }
+            }
+
+            activeChatId = id;
+            saveChatsToStorage();
+            renderChatList();
+            loadActiveChatIntoUI();
+            
+            // On mobile devices, auto close sidebar when selection changes
+            if (window.innerWidth <= 768) {
+                closeSidebar();
+            }
+        }
+
+        function deleteChat(id) {
+            if (chats.length <= 1) {
+                showError("You must keep at least one workspace open!");
+                return;
+            }
+            if (confirm("Are you sure you want to delete this workspace and all its generated audio files?")) {
+                chats = chats.filter(c => c.id !== id);
+                if (activeChatId === id) {
+                    activeChatId = chats[0].id;
+                }
+                saveChatsToStorage();
+                renderChatList();
+                loadActiveChatIntoUI();
+            }
+        }
+
+        function createNewChat() {
+            // Save state of current chat first
+            if (activeChatId) {
+                const currentChat = chats.find(c => c.id === activeChatId);
+                if (currentChat) {
+                    currentChat.text = textInput.value;
+                    currentChat.voice = voiceSelect.value;
+                    currentChat.speed = parseFloat(speedSlider.value);
+                }
+            }
+
+            const newId = 'chat_' + Date.now();
+            const newChat = {
+                id: newId,
+                title: 'Voice Note ' + (chats.length + 1),
+                text: '',
+                voice: 'af_bella',
+                speed: 1.0,
+                history: []
+            };
+
+            chats.push(newChat);
+            activeChatId = newId;
+            saveChatsToStorage();
+            renderChatList();
+            loadActiveChatIntoUI();
+            textInput.focus();
+        }
+
+        // ----------------------------------------------------
+        // VOICE GENERATION & MANAGEMENT
+        // ----------------------------------------------------
+
+        async function startVoiceGeneration() {
+            if (!tts) {
+                showError("Voice generator engine is not initialized yet. Please wait.");
+                return;
+            }
+            const text = textInput.value.trim();
+            if (!text) {
+                showError("Please enter some text to generate.");
+                return;
+            }
+
+            // Set UI generating state
+            isGenerating = true;
+            generationAborted = false;
+            generateBtn.disabled = true;
+            generateBtnText.textContent = "Synthesizing AI...";
+            cancelBtn.style.display = 'flex';
+            errorBanner.style.display = 'none';
+
+            const voiceId = voiceSelect.value;
+            const speed = parseFloat(speedSlider.value);
+
+            try {
+                // Generate audio using exact API contract
+                const audio = await tts.generate(text, { voice: voiceId });
+                
+                if (generationAborted) {
+                    console.log("Generation process discarded because it was canceled.");
+                    return;
+                }
+
+                const blob = audio.toBlob();
+                const base64Data = await blobToBase64(blob);
+
+                // Add to chat history
+                const currentChat = chats.find(c => c.id === activeChatId);
+                if (currentChat) {
+                    const snippet = text.length > 55 ? text.substring(0, 55) + "..." : text;
+                    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    
+                    const newHistoryItem = {
+                        id: 'clip_' + Date.now(),
+                        text: snippet,
+                        fullText: text,
+                        voice: voiceId,
+                        speed: speed,
+                        audioBase64: base64Data,
+                        timestamp: timestamp
+                    };
+
+                    // Insert to front, max 3 items
+                    currentChat.history = currentChat.history || [];
+                    currentChat.history.unshift(newHistoryItem);
+                    if (currentChat.history.length > 3) {
+                        currentChat.history.pop();
+                    }
+
+                    saveChatsToStorage();
+                    renderHistory(currentChat.history);
+                    
+                    // Auto-load newly generated clip into the player
+                    loadAudioClip(newHistoryItem);
+                }
+
+            } catch (err) {
+                console.error("Speech Synthesis Error:", err);
+                showError("Synthesis failed: " + err.message);
+            } finally {
+                // Reset UI state
+                isGenerating = false;
+                generateBtn.disabled = false;
+                generateBtnText.textContent = "Generate Speech";
+                cancelBtn.style.display = 'none';
+            }
+        }
+
+        function cancelVoiceGeneration() {
+            generationAborted = true;
+            isGenerating = false;
+            generateBtn.disabled = false;
+            generateBtnText.textContent = "Generate Speech";
+            cancelBtn.style.display = 'none';
+            showError("Speech synthesis canceled by user.");
+        }
+
+        function blobToBase64(blob) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+            });
+        }
+
+        // Convert base64 dataUrl back to download blob
+        function base64ToBlob(base64DataUrl) {
+            const arr = base64DataUrl.split(',');
+            const mime = arr[0].match(/:(.*?);/)[1];
+            const bstr = atob(arr[1]);
+            let n = bstr.length;
+            const u8arr = new Uint8Array(n);
+            while (n--) {
+                u8arr[n] = bstr.charCodeAt(n);
+            }
+            return new Blob([u8arr], { type: mime });
+        }
+
+        // ----------------------------------------------------
+        // CUSTOM PLAYER ENGINE
+        // ----------------------------------------------------
+
+        function loadAudioClip(historyItem) {
+            currentLoadedClipId = historyItem.id;
+            
+            // Set source
+            nativeAudio.src = historyItem.audioBase64;
+            nativeAudio.load();
+
+            // Set playback speed
+            nativeAudio.playbackRate = historyItem.speed;
+
+            // Enable player controls
+            playBtn.disabled = false;
+            seekSlider.disabled = false;
+            muteBtn.disabled = false;
+            volumeSlider.disabled = false;
+            downloadBtn.disabled = false;
+
+            // Reset seek sliders and timer visuals
+            seekSlider.value = 0;
+            timeCurrent.textContent = "00:00";
+            
+            // Prepare download configuration
+            downloadBtn.onclick = () => {
+                try {
+                    const blob = base64ToBlob(historyItem.audioBase64);
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `kokoro-${historyItem.voice}-${Date.now()}.wav`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                } catch (e) {
+                    showError("Could not download file: " + e.message);
+                }
+            };
+
+            // Play instantly
+            playAudio();
+
+            // Highlight in history
+            highlightPlayingHistoryItem(historyItem.id);
+        }
+
+        function unloadAudioPlayer() {
+            nativeAudio.pause();
+            nativeAudio.src = "";
+            currentLoadedClipId = null;
+
+            playBtn.disabled = true;
+            seekSlider.disabled = true;
+            muteBtn.disabled = true;
+            volumeSlider.disabled = true;
+            downloadBtn.disabled = true;
+
+            playIcon.setAttribute('d', PLAY_SVG_PATH);
+            seekSlider.value = 0;
+            timeCurrent.textContent = "00:00";
+            timeDuration.textContent = "00:00";
+
+            highlightPlayingHistoryItem(null);
+        }
+
+        function playAudio() {
+            try {
+                nativeAudio.play();
+                playIcon.setAttribute('d', PAUSE_SVG_PATH);
+            } catch (err) {
+                console.error("Play failed", err);
+            }
+        }
+
+        function pauseAudio() {
+            nativeAudio.pause();
+            playIcon.setAttribute('d', PLAY_SVG_PATH);
+        }
+
+        function togglePlayPause() {
+            if (nativeAudio.paused) {
+                playAudio();
+            } else {
+                pauseAudio();
+            }
+        }
+
+        function seekAudio() {
+            const pct = parseFloat(seekSlider.value);
+            if (nativeAudio.duration) {
+                nativeAudio.currentTime = (pct / 100) * nativeAudio.duration;
+            }
+        }
+
+        function updateVolume() {
+            const vol = parseFloat(volumeSlider.value);
+            nativeAudio.volume = vol;
+            if (vol === 0) {
+                setMuteIcon(true);
+            } else {
+                setMuteIcon(false);
+            }
+        }
+
+        function toggleMute() {
+            if (nativeAudio.volume > 0) {
+                nativeAudio.dataset.lastVol = nativeAudio.volume;
+                nativeAudio.volume = 0;
+                volumeSlider.value = 0;
+                setMuteIcon(true);
+            } else {
+                const restoreVol = parseFloat(nativeAudio.dataset.lastVol || 1.0);
+                nativeAudio.volume = restoreVol;
+                volumeSlider.value = restoreVol;
+                setMuteIcon(false);
+            }
+        }
+
+        function setMuteIcon(isMuted) {
+            if (isMuted) {
+                muteIcon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" d="M17.25 9.75 19.5 12m0 0 2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25M6.75 8.25l4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z" />';
+            } else {
+                muteIcon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 0 1 0 12.728M16.463 8.288a5.25 5.25 0 0 1 0 7.424M6.75 8.25l4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z" />';
+            }
+        }
+
+        function formatTime(secs) {
+            if (isNaN(secs)) return "00:00";
+            const m = Math.floor(secs / 60);
+            const s = Math.floor(secs % 60);
+            return (m < 10 ? "0" + m : m) + ":" + (s < 10 ? "0" + s : s);
+        }
+
+        // ----------------------------------------------------
+        // HISTORY LIST MANAGEMENT
+        // ----------------------------------------------------
+
+        function renderHistory(historyItems) {
+            const container = document.getElementById('history-list-container');
+            if (historyItems.length === 0) {
+                container.innerHTML = `<div class="empty-history-text">No clips generated in this workspace yet. Click Generate above to create some!</div>`;
+                return;
+            }
+
+            container.innerHTML = '';
+            historyItems.forEach(clip => {
+                const isCurrent = clip.id === currentLoadedClipId;
+                const isPlaying = isCurrent && !nativeAudio.paused;
+
+                const card = document.createElement('div');
+                card.className = 'history-item' + (isCurrent ? ' playing-item' : '');
+                card.id = 'history-item-' + clip.id;
+
+                const details = document.createElement('div');
+                details.className = 'history-details';
+
+                const textLabel = document.createElement('span');
+                textLabel.className = 'history-text';
+                textLabel.textContent = clip.text;
+                textLabel.title = clip.fullText;
+
+                const meta = document.createElement('div');
+                meta.className = 'history-meta';
+                
+                const voiceSpan = document.createElement('span');
+                voiceSpan.className = 'history-meta-voice';
+                voiceSpan.textContent = clip.voice;
+
+                const speedSpan = document.createElement('span');
+                speedSpan.textContent = `Speed: ${clip.speed.toFixed(1)}x`;
+
+                const timeSpan = document.createElement('span');
+                timeSpan.textContent = clip.timestamp;
+
+                meta.appendChild(voiceSpan);
+                meta.appendChild(speedSpan);
+                meta.appendChild(timeSpan);
+                details.appendChild(textLabel);
+                details.appendChild(meta);
+
+                const actions = document.createElement('div');
+                actions.className = 'history-actions';
+
+                // Play / Pause history clip
+                const miniPlayBtn = document.createElement('button');
+                miniPlayBtn.className = 'btn-history-action play-pause-clip';
+                miniPlayBtn.title = "Play this clip";
+                
+                // Set play/pause icon state
+                if (isPlaying) {
+                    miniPlayBtn.innerHTML = `
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" style="width: 16px; height: 16px;">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />
+                        </svg>
+                    `;
+                } else {
+                    miniPlayBtn.innerHTML = `
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
+                            <path d="M8 5v14l11-7z" />
+                        </svg>
+                    `;
+                }
+
+                miniPlayBtn.addEventListener('click', () => {
+                    if (clip.id === currentLoadedClipId) {
+                        togglePlayPause();
+                    } else {
+                        loadAudioClip(clip);
+                    }
+                });
+
+                // Download clip file directly
+                const miniDlBtn = document.createElement('button');
+                miniDlBtn.className = 'btn-history-action';
+                miniDlBtn.title = "Download WAV file";
+                miniDlBtn.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 16px; height: 16px;">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                    </svg>
+                `;
+                miniDlBtn.addEventListener('click', () => {
+                    try {
+                        const blob = base64ToBlob(clip.audioBase64);
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `kokoro-${clip.voice}-${Date.now()}.wav`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                    } catch (e) {
+                        showError("Could not download file: " + e.message);
+                    }
+                });
+
+                // Delete history item
+                const miniDelBtn = document.createElement('button');
+                miniDelBtn.className = 'btn-history-action delete-clip';
+                miniDelBtn.title = "Delete clip from storage";
+                miniDelBtn.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 16px; height: 16px;">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
+                    </svg>
+                `;
+                miniDelBtn.addEventListener('click', () => {
+                    deleteHistoryClip(clip.id);
+                });
+
+                actions.appendChild(miniPlayBtn);
+                actions.appendChild(miniDlBtn);
+                actions.appendChild(miniDelBtn);
+                
+                card.appendChild(details);
+                card.appendChild(actions);
+                container.appendChild(card);
+            });
+        }
+
+        function highlightPlayingHistoryItem(activeClipId) {
+            const items = document.querySelectorAll('.history-item');
+            items.forEach(el => {
+                el.classList.remove('playing-item');
+            });
+
+            if (activeClipId) {
+                const activeEl = document.getElementById('history-item-' + activeClipId);
+                if (activeEl) activeEl.classList.add('playing-item');
+            }
+        }
+
+        function deleteHistoryClip(clipId) {
+            if (confirm("Are you sure you want to delete this generated clip from storage?")) {
+                const currentChat = chats.find(c => c.id === activeChatId);
+                if (currentChat) {
+                    currentChat.history = currentChat.history.filter(h => h.id !== clipId);
+                    saveChatsToStorage();
+                    renderHistory(currentChat.history);
+
+                    if (currentLoadedClipId === clipId) {
+                        unloadAudioPlayer();
+                    }
+                }
+            }
+        }
+
+        // ----------------------------------------------------
+        // UTILITY FUNCTIONS & EVENT LISTENERS
+        // ----------------------------------------------------
+
+        function setupEventListeners() {
+            // Textarea events
+            textInput.addEventListener('input', () => {
+                updateCharacterCount();
+                // Persist current input text locally
+                const chat = chats.find(c => c.id === activeChatId);
+                if (chat) {
+                    chat.text = textInput.value;
+                    saveChatsToStorage();
+                }
+            });
+
+            clearTextBtn.addEventListener('click', () => {
+                textInput.value = '';
+                updateCharacterCount();
+                const chat = chats.find(c => c.id === activeChatId);
+                if (chat) {
+                    chat.text = '';
+                    saveChatsToStorage();
+                }
+                textInput.focus();
+            });
+
+            // Speed slider
+            speedSlider.addEventListener('input', () => {
+                const speed = parseFloat(speedSlider.value);
+                speedValueText.textContent = speed.toFixed(1) + "x";
+                
+                const chat = chats.find(c => c.id === activeChatId);
+                if (chat) {
+                    chat.speed = speed;
+                    saveChatsToStorage();
+                }
+
+                // If currently playing, update live speed
+                if (currentLoadedClipId) {
+                    nativeAudio.playbackRate = speed;
+                }
+            });
+
+            // Voice selection
+            voiceSelect.addEventListener('change', () => {
+                const chat = chats.find(c => c.id === activeChatId);
+                if (chat) {
+                    chat.voice = voiceSelect.value;
+                    saveChatsToStorage();
+                }
+            });
+
+            // Action Buttons
+            generateBtn.addEventListener('click', startVoiceGeneration);
+            cancelBtn.addEventListener('click', cancelVoiceGeneration);
+            newChatBtn.addEventListener('click', createNewChat);
+
+            // Native HTML5 Player bindings
+            nativeAudio.addEventListener('timeupdate', () => {
+                if (nativeAudio.duration) {
+                    const pct = (nativeAudio.currentTime / nativeAudio.duration) * 100;
+                    seekSlider.value = pct;
+                    timeCurrent.textContent = formatTime(nativeAudio.currentTime);
+                }
+            });
+
+            nativeAudio.addEventListener('durationchange', () => {
+                timeDuration.textContent = formatTime(nativeAudio.duration);
+            });
+
+            nativeAudio.addEventListener('ended', () => {
+                playIcon.setAttribute('d', PLAY_SVG_PATH);
+                seekSlider.value = 0;
+                timeCurrent.textContent = "00:00";
+                
+                // Re-render history list to update mini play buttons
+                const chat = chats.find(c => c.id === activeChatId);
+                if (chat) {
+                    renderHistory(chat.history);
+                }
+            });
+
+            // Double check native updates play icons as well
+            nativeAudio.addEventListener('play', () => {
+                playIcon.setAttribute('d', PAUSE_SVG_PATH);
+                const chat = chats.find(c => c.id === activeChatId);
+                if (chat) renderHistory(chat.history);
+            });
+
+            nativeAudio.addEventListener('pause', () => {
+                playIcon.setAttribute('d', PLAY_SVG_PATH);
+                const chat = chats.find(c => c.id === activeChatId);
+                if (chat) renderHistory(chat.history);
+            });
+
+            // Player UI events
+            playBtn.addEventListener('click', togglePlayPause);
+            seekSlider.addEventListener('input', seekAudio);
+            volumeSlider.addEventListener('input', updateVolume);
+            muteBtn.addEventListener('click', toggleMute);
+
+            // Skip inspection screen
+            skipBtn.addEventListener('click', () => {
+                loadingOverlay.classList.add('hidden');
+            });
+
+            // Mobile sliding drawer triggers
+            menuToggle.addEventListener('click', openSidebar);
+            sidebarOverlay.addEventListener('click', closeSidebar);
+        }
+
+        // Sidebar sliding actions
+        function openSidebar() {
+            appSidebar.classList.add('open');
+            sidebarOverlay.classList.add('visible');
+        }
+
+        function closeSidebar() {
+            appSidebar.classList.remove('open');
+            sidebarOverlay.classList.remove('visible');
+        }
+
+        // Show/Hide error banner at the top of workspace
+        function showError(msg) {
+            errorBannerMsg.textContent = msg;
+            errorBanner.style.display = 'flex';
+            
+            // Auto hide after 8 seconds
+            setTimeout(() => {
+                errorBanner.style.display = 'none';
+            }, 8000);
+        }
+    </script>
+</body>
+</html>

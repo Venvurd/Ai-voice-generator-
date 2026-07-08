@@ -1,0 +1,6 @@
+{
+  "name": "Kokoro Voice",
+  "description": "An offline-first, high-quality AI voice generator using Kokoro TTS.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
