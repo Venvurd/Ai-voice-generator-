@@ -1444,6 +1444,120 @@
         // VOICE GENERATION & MANAGEMENT
         // ----------------------------------------------------
 
+        // Split text into chunks that fit into the model's phoneme context
+        function splitTextIntoChunks(text, maxChunkLen = 300) {
+            const rawSegments = text.split(/([.!?；。！？\n\r]+)/);
+            const chunks = [];
+            let currentChunk = "";
+
+            for (let i = 0; i < rawSegments.length; i++) {
+                const seg = rawSegments[i];
+                if (!seg) continue;
+                
+                if ((currentChunk + seg).length > maxChunkLen) {
+                    if (currentChunk.trim()) {
+                        chunks.push(currentChunk.trim());
+                    }
+                    currentChunk = seg;
+                } else {
+                    currentChunk += seg;
+                }
+            }
+            if (currentChunk.trim()) {
+                chunks.push(currentChunk.trim());
+            }
+
+            const finalChunks = [];
+            for (const chunk of chunks) {
+                if (chunk.length <= maxChunkLen) {
+                    finalChunks.push(chunk);
+                } else {
+                    const subSegments = chunk.split(/([,，\s]+)/);
+                    let subChunk = "";
+                    for (const sub of subSegments) {
+                        if ((subChunk + sub).length > maxChunkLen) {
+                            if (subChunk.trim()) finalChunks.push(subChunk.trim());
+                            subChunk = sub;
+                        } else {
+                            subChunk += sub;
+                        }
+                    }
+                    if (subChunk.trim()) finalChunks.push(subChunk.trim());
+                }
+            }
+            
+            return finalChunks.filter(c => c.length > 0);
+        }
+
+        // Custom WAV file generator from float32 samples (Mono, 24000Hz)
+        function pcmToWav(samples, sampleRate) {
+            const buffer = new ArrayBuffer(44 + samples.length * 2);
+            const view = new DataView(buffer);
+
+            const writeString = (v, offset, str) => {
+                for (let i = 0; i < str.length; i++) {
+                    v.setUint8(offset + i, str.charCodeAt(i));
+                }
+            };
+
+            /* RIFF identifier */
+            writeString(view, 0, 'RIFF');
+            /* file length */
+            view.setUint32(4, 36 + samples.length * 2, true);
+            /* RIFF type */
+            writeString(view, 8, 'WAVE');
+            /* format chunk identifier */
+            writeString(view, 12, 'fmt ');
+            /* format chunk length */
+            view.setUint32(16, 16, true);
+            /* sample format (raw PCM) */
+            view.setUint16(20, 1, true);
+            /* channel count (Mono) */
+            view.setUint16(22, 1, true);
+            /* sample rate */
+            view.setUint32(24, sampleRate, true);
+            /* byte rate (sample rate * block align) */
+            view.setUint32(28, sampleRate * 2, true);
+            /* block align (channel count * bytes per sample) */
+            view.setUint16(32, 2, true);
+            /* bits per sample */
+            view.setUint16(34, 16, true);
+            /* data chunk identifier */
+            writeString(view, 36, 'data');
+            /* data chunk length */
+            view.setUint32(40, samples.length * 2, true);
+
+            // Float32 to 16-bit PCM conversion
+            let offset = 44;
+            for (let i = 0; i < samples.length; i++, offset += 2) {
+                let s = Math.max(-1, Math.min(1, samples[i]));
+                view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+            }
+
+            return new Blob([view], { type: 'audio/wav' });
+        }
+
+        // Native share-integrated downloader with direct base64 fallback
+        function triggerDownload(base64Data, filename) {
+            try {
+                if (window.AndroidInterface && typeof window.AndroidInterface.downloadWav === 'function') {
+                    window.AndroidInterface.downloadWav(base64Data, filename);
+                } else {
+                    const blob = base64ToBlob(base64Data);
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                }
+            } catch (e) {
+                showError("Could not download file: " + e.message);
+            }
+        }
+
         async function startVoiceGeneration() {
             if (!tts) {
                 showError("Voice generator engine is not initialized yet. Please wait.");
@@ -1459,7 +1573,6 @@
             isGenerating = true;
             generationAborted = false;
             generateBtn.disabled = true;
-            generateBtnText.textContent = "Synthesizing AI...";
             cancelBtn.style.display = 'flex';
             errorBanner.style.display = 'none';
 
@@ -1467,15 +1580,49 @@
             const speed = parseFloat(speedSlider.value);
 
             try {
-                // Generate audio using exact API contract
-                const audio = await tts.generate(text, { voice: voiceId });
-                
+                // Split text into chunks
+                const chunks = splitTextIntoChunks(text, 300);
+                if (chunks.length === 0) {
+                    throw new Error("Text split resulted in empty chunks.");
+                }
+
+                const pcmArrays = [];
+                let samplingRate = 24000;
+
+                for (let i = 0; i < chunks.length; i++) {
+                    if (generationAborted) {
+                        break;
+                    }
+
+                    // Update UI button with progress
+                    generateBtnText.textContent = `Synthesizing (${i + 1}/${chunks.length})...`;
+                    
+                    const chunkText = chunks[i];
+                    const speech = await tts.generate(chunkText, { voice: voiceId });
+                    
+                    if (speech && speech.audio) {
+                        pcmArrays.push(speech.audio);
+                        samplingRate = speech.sampling_rate || samplingRate;
+                    }
+                }
+
                 if (generationAborted) {
                     console.log("Generation process discarded because it was canceled.");
                     return;
                 }
 
-                const blob = audio.toBlob();
+                // Concatenate Float32Arrays
+                generateBtnText.textContent = "Merging Audio...";
+                const totalLength = pcmArrays.reduce((sum, arr) => sum + arr.length, 0);
+                const mergedPcm = new Float32Array(totalLength);
+                let offset = 0;
+                for (const arr of pcmArrays) {
+                    mergedPcm.set(arr, offset);
+                    offset += arr.length;
+                }
+
+                // Convert to WAV Blob
+                const blob = pcmToWav(mergedPcm, samplingRate);
                 const base64Data = await blobToBase64(blob);
 
                 // Add to chat history
@@ -1578,19 +1725,8 @@
             
             // Prepare download configuration
             downloadBtn.onclick = () => {
-                try {
-                    const blob = base64ToBlob(historyItem.audioBase64);
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `kokoro-${historyItem.voice}-${Date.now()}.wav`;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                } catch (e) {
-                    showError("Could not download file: " + e.message);
-                }
+                const filename = `kokoro-${historyItem.voice}-${Date.now()}.wav`;
+                triggerDownload(historyItem.audioBase64, filename);
             };
 
             // Play instantly
@@ -1775,19 +1911,8 @@
                     </svg>
                 `;
                 miniDlBtn.addEventListener('click', () => {
-                    try {
-                        const blob = base64ToBlob(clip.audioBase64);
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = `kokoro-${clip.voice}-${Date.now()}.wav`;
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                        URL.revokeObjectURL(url);
-                    } catch (e) {
-                        showError("Could not download file: " + e.message);
-                    }
+                    const filename = `kokoro-${clip.voice}-${Date.now()}.wav`;
+                    triggerDownload(clip.audioBase64, filename);
                 });
 
                 // Delete history item
