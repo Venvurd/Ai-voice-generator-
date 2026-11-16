@@ -3,6 +3,8 @@ package com.example
 import android.app.Activity
 import android.content.ContentValues
 import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.graphics.Color as AndroidColor
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -16,19 +18,32 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
 import java.io.File
 import java.io.FileOutputStream
 
 class MainActivity : ComponentActivity() {
+    private var webViewRef: WebView? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(AndroidColor.parseColor("#0F172A")),
+            navigationBarStyle = SystemBarStyle.dark(AndroidColor.parseColor("#0F172A"))
+        )
 
         // Read the HTML content from the assets folder
         val htmlContent = try {
@@ -39,41 +54,56 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            AndroidView(
-                factory = { context ->
-                    WebView(context).apply {
-                        layoutParams = ViewGroup.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
-                        )
-                        webViewClient = object : WebViewClient() {}
-                        webChromeClient = WebChromeClient()
-                        settings.apply {
-                            javaScriptEnabled = true
-                            domStorageEnabled = true
-                            databaseEnabled = true
-                            allowFileAccess = true
-                            allowContentAccess = true
-                            mediaPlaybackRequiresUserGesture = false
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF0F172A))
+                    .windowInsetsPadding(WindowInsets.safeDrawing)
+            ) {
+                AndroidView(
+                    factory = { context ->
+                        WebView(context).apply {
+                            webViewRef = this
+                            setBackgroundColor(AndroidColor.parseColor("#0F172A"))
+                            layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                            webViewClient = object : WebViewClient() {}
+                            webChromeClient = WebChromeClient()
+                            settings.apply {
+                                javaScriptEnabled = true
+                                domStorageEnabled = true
+                                databaseEnabled = true
+                                allowFileAccess = true
+                                allowContentAccess = true
+                                mediaPlaybackRequiresUserGesture = false
+                            }
+
+                            // Register Javascript Interface for native downloads
+                            addJavascriptInterface(WebAppInterface(this@MainActivity), "AndroidInterface")
+
+                            // Load the HTML with a mock secure HTTPS origin to ensure all modern web APIs,
+                            // localStorage, IndexedDB, Web Workers, and ES modules work flawlessly.
+                            loadDataWithBaseURL(
+                                "https://local.app/",
+                                htmlContent,
+                                "text/html",
+                                "UTF-8",
+                                null
+                            )
                         }
-                        
-                        // Register Javascript Interface for native downloads
-                        addJavascriptInterface(WebAppInterface(this@MainActivity), "AndroidInterface")
-                        
-                        // Load the HTML with a mock secure HTTPS origin to ensure all modern web APIs,
-                        // localStorage, IndexedDB, and ES modules work flawlessly.
-                        loadDataWithBaseURL(
-                            "https://local.app/",
-                            htmlContent,
-                            "text/html",
-                            "UTF-8",
-                            null
-                        )
-                    }
-                },
-                modifier = Modifier.fillMaxSize()
-            )
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
+    }
+
+    override fun onDestroy() {
+        webViewRef?.destroy()
+        webViewRef = null
+        super.onDestroy()
     }
 }
 
@@ -81,11 +111,11 @@ class WebAppInterface(private val activity: Activity) {
 
     @JavascriptInterface
     fun downloadWav(base64Data: String, fileName: String) {
-        activity.runOnUiThread {
+        Thread {
             try {
-                // Decode base64 data
+                // Decode base64 data off the main UI thread
                 val cleanBase64 = if (base64Data.contains(",")) {
-                    base64Data.split(",")[1]
+                    base64Data.substringAfter(",")
                 } else {
                     base64Data
                 }
@@ -93,19 +123,23 @@ class WebAppInterface(private val activity: Activity) {
 
                 // Save to downloads directory
                 val savedUri = saveWavFile(audioBytes, fileName)
-                
-                if (savedUri != null) {
-                    Toast.makeText(activity, "Saved to Downloads: $fileName", Toast.LENGTH_LONG).show()
-                    // Prompt user with Share sheet
-                    shareAudioFile(savedUri)
-                } else {
-                    Toast.makeText(activity, "Failed to save file", Toast.LENGTH_SHORT).show()
+
+                activity.runOnUiThread {
+                    if (savedUri != null) {
+                        Toast.makeText(activity, "Saved to Downloads: $fileName", Toast.LENGTH_LONG).show()
+                        // Prompt user with Share sheet
+                        shareAudioFile(savedUri)
+                    } else {
+                        Toast.makeText(activity, "Failed to save file", Toast.LENGTH_SHORT).show()
+                    }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
-                Toast.makeText(activity, "Error saving audio: ${e.message}", Toast.LENGTH_LONG).show()
+                activity.runOnUiThread {
+                    Toast.makeText(activity, "Error saving audio: ${e.message}", Toast.LENGTH_LONG).show()
+                }
             }
-        }
+        }.start()
     }
 
     private fun saveWavFile(bytes: ByteArray, name: String): Uri? {

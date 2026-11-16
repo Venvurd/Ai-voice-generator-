@@ -858,6 +858,79 @@
                 display: none; /* Hide volume on mobile as hardware is preferred */
             }
         }
+
+        /* Voice Generation 0-100% Progress Bar */
+        .gen-progress-wrapper {
+            display: none;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: 16px;
+            padding: 12px 14px;
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+        }
+
+        .gen-progress-wrapper.visible {
+            display: flex;
+        }
+
+        .gen-progress-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            font-size: 0.85rem;
+        }
+
+        .gen-progress-label {
+            color: var(--text-muted);
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .gen-progress-percent {
+            color: var(--primary-light);
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            flex-shrink: 0;
+        }
+
+        .gen-progress-track {
+            width: 100%;
+            height: 10px;
+            background-color: var(--bg-secondary);
+            border-radius: 999px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .gen-progress-fill {
+            height: 100%;
+            width: 0%;
+            border-radius: 999px;
+            background: linear-gradient(90deg, var(--primary), var(--accent-green));
+            transition: width 0.25s ease-out;
+            position: relative;
+        }
+
+        .gen-progress-fill::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.22), transparent);
+            animation: genShimmer 1.4s infinite;
+        }
+
+        @keyframes genShimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
     </style>
 </head>
 <body>
@@ -978,6 +1051,17 @@
                             Cancel
                         </button>
                     </div>
+
+                    <!-- 0-100% Generation Progress Bar -->
+                    <div class="gen-progress-wrapper" id="gen-progress-wrapper" aria-live="polite">
+                        <div class="gen-progress-header">
+                            <span class="gen-progress-label" id="gen-progress-label">Preparing speech engine...</span>
+                            <span class="gen-progress-percent" id="gen-progress-percent">0%</span>
+                        </div>
+                        <div class="gen-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="gen-progress-bar">
+                            <div class="gen-progress-fill" id="gen-progress-fill"></div>
+                        </div>
+                    </div>
                 </section>
 
                 <!-- Audio Controller Card -->
@@ -1064,18 +1148,881 @@
         </div>
     </div>
 
-    <!-- MAIN APP CONTROLLER CODE -->
-    <script type="module">
-        // 1. EXACT CDN IMPORT
+    <!-- SHARED PROSODY, NATURAL PACING, PITCH CONTOUR & WAV CORE -->
+    <script id="tts-prosody-core" type="text/plain">
+        const COMMON_ABBREVS = new Set([
+            'mr', 'mrs', 'ms', 'dr', 'prof', 'sr', 'jr', 'st', 'vs', 'etc',
+            'eg', 'ie', 'fig', 'no', 'vol', 'rev', 'gen', 'lt', 'sgt', 'col',
+            'maj', 'capt', 'cmdr', 'pres', 'gov', 'sen', 'rep', 'inc', 'ltd',
+            'corp', 'dept', 'est', 'approx', 'misc', 'jan', 'feb', 'mar', 'apr',
+            'aug', 'sept', 'sep', 'oct', 'nov', 'dec'
+        ]);
+
+        const CLAUSE_SPLIT_WORDS = new Set([
+            'and', 'but', 'or', 'so', 'yet', 'for', 'nor', 'because', 'although',
+            'though', 'while', 'when', 'where', 'whereas', 'unless', 'until',
+            'since', 'before', 'after', 'that', 'which', 'with', 'from', 'into',
+            'about', 'through', 'during', 'however', 'therefore', 'meanwhile'
+        ]);
+
+        const OPEN_QUOTES = new Set(['"', '“', '«']);
+        const CLOSE_QUOTES = new Set(['"', '”', '»']);
+        const SINGLE_QUOTES = new Set(["'", '‘', '’']);
+
+        function clampNum(val, min, max) {
+            return Math.max(min, Math.min(max, val));
+        }
+
+        function isWordChar(ch) {
+            return !!ch && /[a-zA-Z0-9\u00C0-\u024F]/.test(ch);
+        }
+
+        function isAbbreviationOrDecimal(text, dotIdx) {
+            const prevCh = dotIdx > 0 ? text[dotIdx - 1] : '';
+            const nextCh = dotIdx + 1 < text.length ? text[dotIdx + 1] : '';
+            // Decimal numbers like 3.14 or v1.2
+            if (/\d/.test(prevCh) && /\d/.test(nextCh)) {
+                return true;
+            }
+            // Initials / dotted acronyms like U.S.A. or J.K.
+            const before = text.slice(Math.max(0, dotIdx - 12), dotIdx);
+            const wordMatch = before.match(/([a-zA-Z]+)$/);
+            if (wordMatch) {
+                const word = wordMatch[1].toLowerCase();
+                if (COMMON_ABBREVS.has(word)) return true;
+                if (word.length === 1 && (nextCh === ' ' || nextCh === '.' || /[a-zA-Z]/.test(nextCh))) {
+                    // Single letter initial like "J. K. Rowling" or "U.S.A."
+                    const prevBeforeLetter = dotIdx - 2 >= 0 ? text[dotIdx - 2] : ' ';
+                    if (!/[a-zA-Z]/.test(prevBeforeLetter)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        function analyzeEmphasisZones(speakText) {
+            const zones = [];
+            const len = Math.max(1, speakText.length);
+            const wordRegex = /[A-Za-z0-9\u00C0-\u024F']+/g;
+            let match;
+            let wordIndex = 0;
+            let upperWords = 0;
+            let totalAlphaWords = 0;
+
+            while ((match = wordRegex.exec(speakText)) !== null) {
+                const word = match[0];
+                const cleanLetters = word.replace(/[^A-Za-z\u00C0-\u024F]/g, '');
+                if (cleanLetters.length > 0) {
+                    totalAlphaWords++;
+                    const centerPos = (match.index + word.length * 0.5) / len;
+                    const isAllCaps = cleanLetters.length >= 2 &&
+                        cleanLetters === cleanLetters.toUpperCase() &&
+                        /[A-Z]/.test(cleanLetters);
+
+                    if (isAllCaps) {
+                        upperWords++;
+                        zones.push({
+                            pos: centerPos,
+                            radius: clampNum(word.length / len + 0.08, 0.10, 0.24),
+                            pitchBoost: 1.075, // ~ +1.25 semitones
+                            gainBoost: 1.07
+                        });
+                    } else if (
+                        wordIndex > 0 &&
+                        cleanLetters.length >= 2 &&
+                        /^[A-Z]/.test(cleanLetters) &&
+                        cleanLetters.slice(1) === cleanLetters.slice(1).toLowerCase()
+                    ) {
+                        // Subtle prosodic lift on mid-sentence capitalized proper nouns / emphasis
+                        zones.push({
+                            pos: centerPos,
+                            radius: clampNum(word.length / len + 0.06, 0.08, 0.18),
+                            pitchBoost: 1.028, // ~ +0.48 semitones
+                            gainBoost: 1.02
+                        });
+                    }
+                }
+                wordIndex++;
+            }
+
+            const isAllCapsSegment = totalAlphaWords > 0 && upperWords === totalAlphaWords &&
+                (totalAlphaWords > 1 || speakText.replace(/[^A-Z]/g, '').length >= 3);
+
+            return {
+                emphasisZones: isAllCapsSegment ? [] : zones,
+                isAllCapsSegment,
+                startsWithCapital: /^[A-Z]/.test(speakText.trim())
+            };
+        }
+
+        function splitLongClauseAtSpaces(segment) {
+            const text = segment.speakText;
+            if (text.length <= 78 && text.split(/\s+/).length <= 12) {
+                return [segment];
+            }
+
+            const words = text.split(/\s+/).filter(Boolean);
+            if (words.length <= 6) {
+                return [segment];
+            }
+
+            const subPieces = [];
+            let currentWords = [];
+            let currentLen = 0;
+
+            for (let i = 0; i < words.length; i++) {
+                const w = words[i];
+                const cleanLower = w.toLowerCase().replace(/[^a-z]/g, '');
+                const remaining = words.length - i;
+
+                const shouldBreakBefore =
+                    currentWords.length >= 4 &&
+                    remaining >= 3 &&
+                    (
+                        (currentLen >= 46 && CLAUSE_SPLIT_WORDS.has(cleanLower)) ||
+                        currentLen >= 68
+                    );
+
+                if (shouldBreakBefore) {
+                    subPieces.push({
+                        text: currentWords.join(' '),
+                        isFinal: false
+                    });
+                    currentWords = [w];
+                    currentLen = w.length;
+                } else {
+                    currentWords.push(w);
+                    currentLen += w.length + 1;
+                }
+            }
+
+            if (currentWords.length > 0) {
+                subPieces.push({
+                    text: currentWords.join(' '),
+                    isFinal: true
+                });
+            }
+
+            return subPieces.map((piece, idx) => {
+                const isLast = idx === subPieces.length - 1;
+                const capInfo = analyzeEmphasisZones(piece.text);
+                return {
+                    speakText: piece.text,
+                    pauseAfterMs: isLast ? segment.pauseAfterMs : segment.spacePauseMs,
+                    spacePauseMs: segment.spacePauseMs,
+                    endType: isLast ? segment.endType : 'clause',
+                    isQuoted: segment.isQuoted,
+                    isAllCapsSegment: capInfo.isAllCapsSegment,
+                    startsWithCapital: capInfo.startsWithCapital,
+                    emphasisZones: capInfo.emphasisZones
+                };
+            });
+        }
+
+        function segmentTextForProsody(rawText, userSpeed) {
+            if (!rawText || !rawText.trim()) return [];
+            const normalized = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+            const speedScale = clampNum(userSpeed, 0.7, 1.5);
+            const rawSegments = [];
+
+            let buf = '';
+            let inDoubleQuote = false;
+            let inSingleQuote = false;
+
+            const pushSegment = (pauseMs, endType, wasQuoted) => {
+                // Clean stray quote symbols while preserving apostrophes inside words
+                const cleaned = buf
+                    .replace(/["“”«»]/g, '')
+                    .replace(/(^|\s)[‘’']|[‘’'](?=\s|$)/g, '$1')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+
+                buf = '';
+                if (!cleaned || !/[a-zA-Z0-9\u00C0-\u024F\u4E00-\u9FFF]/.test(cleaned)) {
+                    // Attach pause to previous segment if one exists
+                    if (rawSegments.length > 0 && pauseMs > 0) {
+                        const prev = rawSegments[rawSegments.length - 1];
+                        prev.pauseAfterMs = Math.max(prev.pauseAfterMs, Math.round(pauseMs / speedScale));
+                    }
+                    return;
+                }
+
+                const capInfo = analyzeEmphasisZones(cleaned);
+                rawSegments.push({
+                    speakText: cleaned,
+                    pauseAfterMs: Math.round(pauseMs / speedScale),
+                    spacePauseMs: Math.round(75 / speedScale),
+                    endType,
+                    isQuoted: wasQuoted,
+                    isAllCapsSegment: capInfo.isAllCapsSegment,
+                    startsWithCapital: capInfo.startsWithCapital,
+                    emphasisZones: capInfo.emphasisZones
+                });
+            };
+
+            let i = 0;
+            while (i < normalized.length) {
+                const ch = normalized[i];
+                const prevCh = i > 0 ? normalized[i - 1] : '';
+                const nextCh = i + 1 < normalized.length ? normalized[i + 1] : '';
+
+                // 1. Paragraph / Newline breaks
+                if (ch === '\n') {
+                    let nlCount = 0;
+                    while (i < normalized.length && (normalized[i] === '\n' || normalized[i] === ' ' || normalized[i] === '\t')) {
+                        if (normalized[i] === '\n') nlCount++;
+                        i++;
+                    }
+                    pushSegment(nlCount >= 2 ? 540 : 380, 'statement', inDoubleQuote || inSingleQuote);
+                    continue;
+                }
+
+                // 2. Deliberate multiple spaces
+                if (ch === ' ' || ch === '\t') {
+                    let spaceCount = 0;
+                    while (i < normalized.length && (normalized[i] === ' ' || normalized[i] === '\t')) {
+                        spaceCount++;
+                        i++;
+                    }
+                    if (spaceCount >= 2 && buf.trim().length > 0) {
+                        pushSegment(140, 'clause', inDoubleQuote || inSingleQuote);
+                    } else if (buf.length > 0 && !buf.endsWith(' ')) {
+                        buf += ' ';
+                    }
+                    continue;
+                }
+
+                // 3. Ellipsis ("..." or "…")
+                if (ch === '…' || (ch === '.' && normalized.slice(i, i + 3) === '...')) {
+                    const step = ch === '…' ? 1 : 3;
+                    buf += '...';
+                    i += step;
+                    while (i < normalized.length && (CLOSE_QUOTES.has(normalized[i]) || normalized[i] === ')')) {
+                        if (CLOSE_QUOTES.has(normalized[i])) inDoubleQuote = false;
+                        i++;
+                    }
+                    pushSegment(450, 'ellipsis', inDoubleQuote || inSingleQuote);
+                    continue;
+                }
+
+                // 4. Quotation marks (double & standalone single)
+                if (OPEN_QUOTES.has(ch) || CLOSE_QUOTES.has(ch)) {
+                    const wasQuoted = inDoubleQuote || inSingleQuote;
+                    if (!inDoubleQuote && (OPEN_QUOTES.has(ch) || !isWordChar(prevCh))) {
+                        // Entering quote
+                        if (buf.trim().length > 0) {
+                            pushSegment(125, 'clause', wasQuoted);
+                        }
+                        inDoubleQuote = true;
+                    } else {
+                        // Exiting quote
+                        inDoubleQuote = false;
+                        if (buf.trim().length > 0) {
+                            pushSegment(145, 'clause', true);
+                        }
+                    }
+                    i++;
+                    continue;
+                }
+
+                if (SINGLE_QUOTES.has(ch)) {
+                    const isApostrophe = isWordChar(prevCh) && (isWordChar(nextCh) || (prevCh.toLowerCase() === 's' && !isWordChar(nextCh) && inSingleQuote === false));
+                    if (!isApostrophe) {
+                        const wasQuoted = inDoubleQuote || inSingleQuote;
+                        if (!inSingleQuote && !isWordChar(prevCh)) {
+                            if (buf.trim().length > 0) {
+                                pushSegment(120, 'clause', wasQuoted);
+                            }
+                            inSingleQuote = true;
+                            i++;
+                            continue;
+                        } else if (inSingleQuote && !isWordChar(nextCh)) {
+                            inSingleQuote = false;
+                            if (buf.trim().length > 0) {
+                                pushSegment(135, 'clause', true);
+                            }
+                            i++;
+                            continue;
+                        }
+                    }
+                }
+
+                // 5. Sentence Enders (., !, ?, 。, ！, ？)
+                if (ch === '.' || ch === '!' || ch === '?' || ch === '。' || ch === '！' || ch === '？') {
+                    if (ch === '.' && isAbbreviationOrDecimal(normalized, i)) {
+                        buf += ch;
+                        i++;
+                        continue;
+                    }
+
+                    buf += ch;
+                    i++;
+
+                    // Consume repeated punctuation like "?!" or "!!"
+                    let hasQ = (ch === '?' || ch === '？');
+                    let hasEx = (ch === '!' || ch === '！');
+                    while (i < normalized.length && (normalized[i] === '!' || normalized[i] === '?' || normalized[i] === '.')) {
+                        if (normalized[i] === '?') hasQ = true;
+                        if (normalized[i] === '!') hasEx = true;
+                        buf += normalized[i];
+                        i++;
+                    }
+
+                    const wasQuoted = inDoubleQuote || inSingleQuote;
+                    // Check if closing quote immediately follows punctuation (e.g. `"Wait!"`)
+                    let exitedQuote = false;
+                    while (i < normalized.length && (CLOSE_QUOTES.has(normalized[i]) || SINGLE_QUOTES.has(normalized[i]) || normalized[i] === ')')) {
+                        if (CLOSE_QUOTES.has(normalized[i])) {
+                            inDoubleQuote = false;
+                            exitedQuote = true;
+                        } else if (SINGLE_QUOTES.has(normalized[i]) && inSingleQuote) {
+                            inSingleQuote = false;
+                            exitedQuote = true;
+                        }
+                        i++;
+                    }
+
+                    const endType = hasQ ? 'question' : (hasEx ? 'exclamation' : 'statement');
+                    const basePause = hasQ ? 410 : (hasEx ? 390 : 360);
+                    pushSegment(exitedQuote ? basePause + 40 : basePause, endType, wasQuoted);
+                    continue;
+                }
+
+                // 6. Clause Punctuation (,, ;, :, —, –, parens)
+                if (ch === ',' || ch === '，' || ch === ';' || ch === '；' || ch === ':' || ch === '：' || ch === '—' || ch === '–' || ch === '(' || ch === ')') {
+                    // Protect numeric commas like 1,000
+                    if (ch === ',' && /\d/.test(prevCh) && /\d/.test(nextCh)) {
+                        buf += ch;
+                        i++;
+                        continue;
+                    }
+
+                    const wasQuoted = inDoubleQuote || inSingleQuote;
+                    if (ch === '(') {
+                        if (buf.trim().length > 0) {
+                            pushSegment(160, 'clause', wasQuoted);
+                        }
+                        i++;
+                        continue;
+                    }
+
+                    if (ch !== ')') {
+                        buf += (ch === '—' || ch === '–') ? ',' : ch;
+                    }
+                    i++;
+
+                    let exitedQuote = false;
+                    while (i < normalized.length && (CLOSE_QUOTES.has(normalized[i]) || SINGLE_QUOTES.has(normalized[i]))) {
+                        if (CLOSE_QUOTES.has(normalized[i])) {
+                            inDoubleQuote = false;
+                            exitedQuote = true;
+                        } else if (SINGLE_QUOTES.has(normalized[i]) && inSingleQuote) {
+                            inSingleQuote = false;
+                            exitedQuote = true;
+                        }
+                        i++;
+                    }
+
+                    const isComma = (ch === ',' || ch === '，' || ch === ')');
+                    const basePause = isComma ? 185 : 245;
+                    pushSegment(exitedQuote ? Math.max(basePause, 210) : basePause, 'clause', wasQuoted);
+                    continue;
+                }
+
+                buf += ch;
+                i++;
+            }
+
+            if (buf.trim().length > 0) {
+                pushSegment(120, 'statement', inDoubleQuote || inSingleQuote);
+            }
+
+            // Expand long clauses by natural space pauses & assign per-segment speed
+            const finalSegments = [];
+            for (const seg of rawSegments) {
+                const expanded = splitLongClauseAtSpaces(seg);
+                for (const item of expanded) {
+                    let segSpeed = userSpeed * 0.94; // Calibrated natural conversational baseline
+                    if (item.isAllCapsSegment) segSpeed *= 0.90;
+                    else if (item.endType === 'question') segSpeed *= 0.96;
+                    else if (item.isQuoted) segSpeed *= 0.98;
+                    else if (item.endType === 'exclamation') segSpeed *= 1.01;
+                    item.effectiveSpeed = clampNum(segSpeed, 0.5, 2.0);
+                    finalSegments.push(item);
+                }
+            }
+
+            return finalSegments;
+        }
+
+        function trimSilenceAndFade(samples, sampleRate) {
+            if (!samples || samples.length === 0) return new Float32Array(0);
+            const threshold = 0.0025;
+            const cushion = Math.floor(sampleRate * 0.015); // 15ms cushion
+            let start = 0;
+            let end = samples.length - 1;
+
+            while (start < samples.length && Math.abs(samples[start]) < threshold) start++;
+            while (end > start && Math.abs(samples[end]) < threshold) end--;
+
+            if (start >= end) {
+                return new Float32Array(Math.min(samples.length, Math.floor(sampleRate * 0.04)));
+            }
+
+            start = Math.max(0, start - cushion);
+            end = Math.min(samples.length - 1, end + cushion);
+
+            const out = new Float32Array(end - start + 1);
+            out.set(samples.subarray(start, end + 1));
+
+            const fadeInLen = Math.min(Math.floor(sampleRate * 0.008), Math.floor(out.length / 4));
+            const fadeOutLen = Math.min(Math.floor(sampleRate * 0.012), Math.floor(out.length / 4));
+
+            for (let i = 0; i < fadeInLen; i++) {
+                out[i] *= i / fadeInLen;
+            }
+            for (let i = 0; i < fadeOutLen; i++) {
+                out[out.length - 1 - i] *= i / fadeOutLen;
+            }
+            return out;
+        }
+
+        function evaluatePitchAndGainAtProgress(t, segment) {
+            // Base vocal register from capitalization & quotation context
+            let pitch = 1.0;
+            let gain = 1.0;
+
+            if (segment.isQuoted) {
+                pitch *= 1.035; // Distinct natural register for quoted speech
+            }
+            if (segment.isAllCapsSegment) {
+                pitch *= 1.06;
+                gain *= 1.06;
+            } else if (segment.startsWithCapital && t < 0.22) {
+                // Gentle warm onset on capitalized sentence start
+                const w = 1 - t / 0.22;
+                pitch *= 1 + 0.018 * w;
+            } else if (!segment.startsWithCapital && t < 0.15) {
+                pitch *= 0.992;
+            }
+
+            // Punctuation-driven intonation contour
+            const endType = segment.endType;
+            if (endType === 'question') {
+                // Slight dip mid-way then rising interrogative inflection on final 38%
+                if (t > 0.62) {
+                    const u = (t - 0.62) / 0.38;
+                    pitch *= 1 + 0.11 * (u * u * (3 - 2 * u));
+                } else {
+                    pitch *= 0.99 + 0.015 * Math.sin(Math.PI * t);
+                }
+            } else if (endType === 'exclamation') {
+                // Bright energetic peak early-to-mid, decisive settle at end
+                const peak = Math.sin(Math.PI * Math.min(1, t * 1.15));
+                pitch *= 1.01 + 0.065 * peak - (t > 0.78 ? 0.025 * ((t - 0.78) / 0.22) : 0);
+                gain *= 1.03;
+            } else if (endType === 'clause') {
+                // Subtle continuation lift on final 25% signaling more to follow
+                if (t > 0.75) {
+                    const u = (t - 0.75) / 0.25;
+                    pitch *= 1 + 0.032 * u;
+                }
+            } else if (endType === 'ellipsis') {
+                // Thoughtful gentle fade in pitch
+                pitch *= 1.01 - 0.035 * t;
+            } else {
+                // Declarative statement: gentle natural downward terminal cadence on final 28%
+                if (t > 0.72) {
+                    const u = (t - 0.72) / 0.28;
+                    pitch *= 1 - 0.052 * (u * u * (3 - 2 * u));
+                }
+            }
+
+            // Localized capitalization / ALL-CAPS word emphasis bell curves
+            if (segment.emphasisZones && segment.emphasisZones.length > 0) {
+                for (let z = 0; z < segment.emphasisZones.length; z++) {
+                    const zone = segment.emphasisZones[z];
+                    const dist = Math.abs(t - zone.pos);
+                    if (dist < zone.radius) {
+                        const weight = 0.5 * (1 + Math.cos((Math.PI * dist) / zone.radius));
+                        pitch *= 1 + (zone.pitchBoost - 1) * weight;
+                        gain *= 1 + (zone.gainBoost - 1) * weight;
+                    }
+                }
+            }
+
+            return {
+                pitch: clampNum(pitch, 0.88, 1.18),
+                gain: clampNum(gain, 0.90, 1.12)
+            };
+        }
+
+        function applyPitchContourWSOLA(input, sampleRate, segment) {
+            const n = input.length;
+            const winSize = 960;  // 40ms at 24kHz
+            const hopOut = 240;   // 10ms hop (75% overlap)
+            if (n < winSize + hopOut) {
+                return input;
+            }
+
+            const hann = new Float32Array(winSize);
+            for (let k = 0; k < winSize; k++) {
+                hann[k] = 0.5 * (1 - Math.cos((2 * Math.PI * k) / (winSize - 1)));
+            }
+
+            const output = new Float32Array(n);
+            const norm = new Float32Array(n);
+            const searchRadius = 96; // ±4ms phase lock search
+            const overlapCheck = 144;
+
+            for (let outPos = 0; outPos < n; outPos += hopOut) {
+                const progress = outPos / Math.max(1, n - 1);
+                const { pitch, gain } = evaluatePitchAndGainAtProgress(progress, segment);
+
+                let bestDelta = 0;
+                if (outPos > 0 && Math.abs(pitch - 1.0) > 0.008) {
+                    let bestCorr = -Infinity;
+                    const maxCheck = Math.min(overlapCheck, n - outPos);
+                    for (let delta = -searchRadius; delta <= searchRadius; delta += 6) {
+                        let corr = 0;
+                        let energy = 1e-6;
+                        for (let k = 0; k < maxCheck; k += 3) {
+                            const outVal = output[outPos + k];
+                            const srcIdx = clampNum(Math.floor(outPos + delta + k * pitch), 0, n - 1);
+                            const inVal = input[srcIdx];
+                            corr += outVal * inVal;
+                            energy += inVal * inVal;
+                        }
+                        const score = corr / Math.sqrt(energy);
+                        if (score > bestCorr) {
+                            bestCorr = score;
+                            bestDelta = delta;
+                        }
+                    }
+                }
+
+                const baseSrc = outPos + bestDelta;
+                for (let k = 0; k < winSize; k++) {
+                    const outIdx = outPos + k;
+                    if (outIdx >= n) break;
+                    const srcFloat = clampNum(baseSrc + k * pitch, 0, n - 1.0001);
+                    const idx0 = Math.floor(srcFloat);
+                    const frac = srcFloat - idx0;
+                    const sample = input[idx0] * (1 - frac) + input[idx0 + 1] * frac;
+                    const w = hann[k];
+                    output[outIdx] += sample * gain * w;
+                    norm[outIdx] += w;
+                }
+            }
+
+            for (let i = 0; i < n; i++) {
+                if (norm[i] > 1e-5) {
+                    let val = output[i] / norm[i];
+                    if (val > 0.96) val = 0.96 + 0.03 * Math.tanh((val - 0.96) * 10);
+                    else if (val < -0.96) val = -0.96 + 0.03 * Math.tanh((val + 0.96) * 10);
+                    output[i] = val;
+                } else {
+                    output[i] = input[i];
+                }
+            }
+
+            return output;
+        }
+
+        function pcmToWavBuffer(samples, sampleRate) {
+            const buffer = new ArrayBuffer(44 + samples.length * 2);
+            const view = new DataView(buffer);
+
+            const writeString = (v, offset, str) => {
+                for (let i = 0; i < str.length; i++) {
+                    v.setUint8(offset + i, str.charCodeAt(i));
+                }
+            };
+
+            writeString(view, 0, 'RIFF');
+            view.setUint32(4, 36 + samples.length * 2, true);
+            writeString(view, 8, 'WAVE');
+            writeString(view, 12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true);
+            view.setUint16(22, 1, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * 2, true);
+            view.setUint16(32, 2, true);
+            view.setUint16(34, 16, true);
+            writeString(view, 36, 'data');
+            view.setUint32(40, samples.length * 2, true);
+
+            let offset = 44;
+            for (let i = 0; i < samples.length; i++, offset += 2) {
+                const s = Math.max(-1, Math.min(1, samples[i]));
+                view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+            }
+            return buffer;
+        }
+
+        function blobToDataUrl(blob) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+            });
+        }
+    </script>
+
+    <!-- DEDICATED WEB WORKER CODE (RUNS OFF MAIN UI THREAD) -->
+    <script id="tts-worker-code" type="text/plain">
         import { KokoroTTS } from 'https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js';
 
-        // State variables
         let tts = null;
+        let isInitializing = false;
+        const cancelledJobs = new Set();
+        let processingQueue = Promise.resolve();
+
+        async function initModel() {
+            if (tts || isInitializing) return;
+            isInitializing = true;
+
+            const fileProgress = new Map();
+            let lastEmit = 0;
+
+            const handleProgress = (info) => {
+                if (!info) return;
+                if (info.status === 'progress' && info.file) {
+                    const pct = typeof info.progress === 'number' ? info.progress : 0;
+                    fileProgress.set(info.file, pct);
+                    const now = Date.now();
+                    if (now - lastEmit > 150) {
+                        lastEmit = now;
+                        let sum = 0;
+                        fileProgress.forEach((v) => { sum += v; });
+                        const avg = Math.min(96, Math.max(5, Math.round(sum / Math.max(1, fileProgress.size))));
+                        self.postMessage({
+                            type: 'INIT_PROGRESS',
+                            percent: avg,
+                            message: 'Downloading voice model assets...'
+                        });
+                    }
+                } else if (info.status === 'done' && info.file) {
+                    fileProgress.set(info.file, 100);
+                }
+            };
+
+            try {
+                self.postMessage({ type: 'INIT_PROGRESS', percent: 5, message: 'Connecting to model CDN...' });
+                try {
+                    tts = await KokoroTTS.from_pretrained(
+                        'onnx-community/Kokoro-82M-v1.0-ONNX',
+                        { dtype: 'q8', progress_callback: handleProgress }
+                    );
+                } catch (primaryErr) {
+                    // Fallback explicitly to wasm if auto device selection fails inside WebView worker
+                    tts = await KokoroTTS.from_pretrained(
+                        'onnx-community/Kokoro-82M-v1.0-ONNX',
+                        { dtype: 'q8', device: 'wasm', progress_callback: handleProgress }
+                    );
+                }
+
+                self.postMessage({ type: 'INIT_PROGRESS', percent: 100, message: 'Kokoro Model Ready!' });
+                self.postMessage({ type: 'INIT_READY' });
+            } catch (err) {
+                self.postMessage({ type: 'INIT_ERROR', error: err?.message || String(err) });
+            } finally {
+                isInitializing = false;
+            }
+        }
+
+        async function runGenerationJob(data) {
+            const { jobId, text, voiceId, speed } = data;
+            if (cancelledJobs.has(jobId)) {
+                self.postMessage({ type: 'GEN_CANCELLED', jobId });
+                return;
+            }
+            if (!tts) {
+                self.postMessage({ type: 'GEN_ERROR', jobId, error: 'Voice generator engine is not initialized yet.' });
+                return;
+            }
+
+            try {
+                self.postMessage({
+                    type: 'GEN_PROGRESS',
+                    jobId,
+                    percent: 2,
+                    sliceEndPercent: 5,
+                    label: 'Analyzing punctuation, quotes & emphasis...'
+                });
+
+                const segments = segmentTextForProsody(text, speed);
+                if (segments.length === 0) {
+                    throw new Error('No speakable text found.');
+                }
+
+                const totalChars = segments.reduce((sum, s) => sum + s.speakText.length, 0) || 1;
+                const processedChunks = [];
+                let samplingRate = 24000;
+                let completedChars = 0;
+
+                for (let i = 0; i < segments.length; i++) {
+                    if (cancelledJobs.has(jobId)) {
+                        self.postMessage({ type: 'GEN_CANCELLED', jobId });
+                        return;
+                    }
+
+                    const seg = segments[i];
+                    const startPct = 5 + (completedChars / totalChars) * 80;
+                    const endPct = 5 + ((completedChars + seg.speakText.length) / totalChars) * 80;
+
+                    self.postMessage({
+                        type: 'GEN_PROGRESS',
+                        jobId,
+                        percent: Math.round(startPct),
+                        sliceEndPercent: Math.round(endPct),
+                        label: `Synthesizing phrase ${i + 1} of ${segments.length}...`
+                    });
+
+                    const speech = await tts.generate(seg.speakText, {
+                        voice: voiceId,
+                        speed: seg.effectiveSpeed
+                    });
+
+                    if (cancelledJobs.has(jobId)) {
+                        self.postMessage({ type: 'GEN_CANCELLED', jobId });
+                        return;
+                    }
+
+                    if (speech && speech.audio && speech.audio.length > 0) {
+                        samplingRate = speech.sampling_rate || samplingRate;
+                        const trimmed = trimSilenceAndFade(speech.audio, samplingRate);
+                        const contoured = applyPitchContourWSOLA(trimmed, samplingRate, seg);
+                        processedChunks.push({
+                            pcm: contoured,
+                            pauseAfterMs: seg.pauseAfterMs
+                        });
+                    }
+
+                    completedChars += seg.speakText.length;
+                    self.postMessage({
+                        type: 'GEN_PROGRESS',
+                        jobId,
+                        percent: Math.round(endPct),
+                        sliceEndPercent: Math.round(endPct),
+                        label: `Synthesized phrase ${i + 1} of ${segments.length}`
+                    });
+                }
+
+                if (cancelledJobs.has(jobId)) {
+                    self.postMessage({ type: 'GEN_CANCELLED', jobId });
+                    return;
+                }
+
+                self.postMessage({
+                    type: 'GEN_PROGRESS',
+                    jobId,
+                    percent: 88,
+                    sliceEndPercent: 93,
+                    label: 'Applying natural speech pacing...'
+                });
+
+                let totalSamples = 0;
+                const pauseSampleCounts = processedChunks.map((chunk, idx) => {
+                    const isLast = idx === processedChunks.length - 1;
+                    const ms = isLast ? Math.min(chunk.pauseAfterMs, 120) : chunk.pauseAfterMs;
+                    return Math.max(0, Math.round((ms / 1000) * samplingRate));
+                });
+
+                for (let i = 0; i < processedChunks.length; i++) {
+                    totalSamples += processedChunks[i].pcm.length + pauseSampleCounts[i];
+                }
+
+                const mergedPcm = new Float32Array(totalSamples);
+                let offset = 0;
+                for (let i = 0; i < processedChunks.length; i++) {
+                    mergedPcm.set(processedChunks[i].pcm, offset);
+                    offset += processedChunks[i].pcm.length + pauseSampleCounts[i];
+                }
+
+                self.postMessage({
+                    type: 'GEN_PROGRESS',
+                    jobId,
+                    percent: 94,
+                    sliceEndPercent: 99,
+                    label: 'Encoding WAV audio...'
+                });
+
+                const wavBuffer = pcmToWavBuffer(mergedPcm, samplingRate);
+                const wavBlob = new Blob([wavBuffer], { type: 'audio/wav' });
+                const base64Data = await blobToDataUrl(wavBlob);
+
+                if (cancelledJobs.has(jobId)) {
+                    self.postMessage({ type: 'GEN_CANCELLED', jobId });
+                    return;
+                }
+
+                self.postMessage({
+                    type: 'GEN_PROGRESS',
+                    jobId,
+                    percent: 100,
+                    sliceEndPercent: 100,
+                    label: 'Complete!'
+                });
+
+                self.postMessage({
+                    type: 'GEN_COMPLETE',
+                    jobId,
+                    base64Data,
+                    samplingRate,
+                    durationSec: totalSamples / samplingRate
+                });
+            } catch (err) {
+                self.postMessage({
+                    type: 'GEN_ERROR',
+                    jobId,
+                    error: err?.message || String(err)
+                });
+            } finally {
+                cancelledJobs.delete(jobId);
+            }
+        }
+
+        self.onmessage = (event) => {
+            const msg = event.data;
+            if (!msg) return;
+            if (msg.type === 'INIT') {
+                initModel();
+            } else if (msg.type === 'CANCEL') {
+                cancelledJobs.add(msg.jobId);
+            } else if (msg.type === 'GENERATE') {
+                processingQueue = processingQueue.then(() => runGenerationJob(msg));
+            }
+        };
+    </script>
+
+    <!-- MAIN APP CONTROLLER CODE -->
+    <script type="module">
+        // State variables
+        let worker = null;
+        let useFallbackEngine = false;
+        let fallbackTts = null;
+        let fallbackCore = null;
+        let engineReady = false;
+
         let chats = [];
         let activeChatId = null;
         let isGenerating = false;
-        let generationAborted = false;
+        let activeJobId = null;
+        let jobCounter = 0;
         let currentLoadedClipId = null; // Track loaded history item
+
+        // In-memory audio cache in case localStorage quota is exceeded for huge WAV clips
+        const sessionAudioCache = new Map();
+
+        // Smooth sub-phrase progress trickle state
+        let progressTrickleTimer = null;
+        let displayedProgress = 0;
+        let sliceTargetMax = 0;
+        let hideProgressTimeout = null;
 
         // UI references
         const nativeAudio = document.getElementById('native-audio');
@@ -1090,6 +2037,13 @@
         const cancelBtn = document.getElementById('cancel-btn');
         const errorBanner = document.getElementById('error-banner');
         const errorBannerMsg = document.getElementById('error-banner-message');
+
+        // 0-100% Generation Progress Bar references
+        const genProgressWrapper = document.getElementById('gen-progress-wrapper');
+        const genProgressLabel = document.getElementById('gen-progress-label');
+        const genProgressPercent = document.getElementById('gen-progress-percent');
+        const genProgressBar = document.getElementById('gen-progress-bar');
+        const genProgressFill = document.getElementById('gen-progress-fill');
 
         // Player Controls references
         const playBtn = document.getElementById('player-play-btn');
@@ -1125,9 +2079,9 @@
         const PAUSE_SVG_PATH = 'M6 19h4V5H6v14zm8-14v14h4V5h-4z';
 
         // ----------------------------------------------------
-        // INITIALIZATION & LIFECYCLE
+        // INITIALIZATION & WEB WORKER LIFECYCLE
         // ----------------------------------------------------
-        
+
         window.addEventListener('DOMContentLoaded', () => {
             loadChatsFromStorage();
             renderChatList();
@@ -1135,55 +2089,219 @@
             initEngine();
         });
 
-        // Initialize Kokoro TTS model asynchronously
-        async function initEngine() {
-            // Simulated fake progress bar to reassure users during the 80MB model download
+        function buildWorkerBlobUrl() {
+            const coreCode = document.getElementById('tts-prosody-core').textContent;
+            const workerCode = document.getElementById('tts-worker-code').textContent;
+            const fullSource = coreCode + '\n' + workerCode;
+            const blob = new Blob([fullSource], { type: 'application/javascript' });
+            return URL.createObjectURL(blob);
+        }
+
+        function initEngine() {
             let loadPercentage = 0;
+            let realProgressReceived = false;
             const progressInterval = setInterval(() => {
-                if (loadPercentage < 90) {
-                    loadPercentage += Math.random() * 5;
-                    if (loadPercentage > 90) loadPercentage = 90;
-                    updateLoadProgress(Math.floor(loadPercentage), "Downloading model assets...");
+                if (!realProgressReceived && loadPercentage < 85) {
+                    loadPercentage += Math.random() * 4;
+                    if (loadPercentage > 85) loadPercentage = 85;
+                    updateLoadProgress(Math.floor(loadPercentage), 'Downloading model assets...');
                 }
             }, 800);
 
-            try {
-                updateLoadProgress(5, "Connecting to server...");
-                
-                // Load Model
-                tts = await KokoroTTS.from_pretrained(
-                    'onnx-community/Kokoro-82M-v1.0-ONNX',
-                    { dtype: 'q8' }
-                );
-
+            const markEngineReady = () => {
                 clearInterval(progressInterval);
-                updateLoadProgress(100, "Kokoro Model Ready!");
-                
-                // Make status badge active
+                engineReady = true;
+                updateLoadProgress(100, 'Kokoro Model Ready!');
                 engineStatusBadge.classList.add('ready');
-                engineStatusText.textContent = "Engine Ready";
-
-                // Fade out loader overlay
+                engineStatusText.textContent = 'Engine Ready';
                 setTimeout(() => {
                     loadingOverlay.classList.add('hidden');
-                }, 800);
+                }, 700);
+            };
 
+            const activateFallback = async (reason) => {
+                console.warn('Switching to async-yielding fallback engine:', reason);
+                useFallbackEngine = true;
+                if (worker) {
+                    try { worker.terminate(); } catch (_) {}
+                    worker = null;
+                }
+                try {
+                    const coreCode = document.getElementById('tts-prosody-core').textContent +
+                        '\nexport { segmentTextForProsody, trimSilenceAndFade, applyPitchContourWSOLA, pcmToWavBuffer, blobToDataUrl };';
+                    const coreUrl = URL.createObjectURL(new Blob([coreCode], { type: 'application/javascript' }));
+                    const [{ KokoroTTS }, coreModule] = await Promise.all([
+                        import('https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js'),
+                        import(coreUrl)
+                    ]);
+                    fallbackCore = coreModule;
+                    fallbackTts = await KokoroTTS.from_pretrained(
+                        'onnx-community/Kokoro-82M-v1.0-ONNX',
+                        {
+                            dtype: 'q8',
+                            progress_callback: (info) => {
+                                if (info && info.status === 'progress' && typeof info.progress === 'number') {
+                                    realProgressReceived = true;
+                                    updateLoadProgress(Math.min(96, Math.round(info.progress)), 'Downloading voice model...');
+                                }
+                            }
+                        }
+                    );
+                    markEngineReady();
+                } catch (err) {
+                    clearInterval(progressInterval);
+                    console.error('Initialization error:', err);
+                    showError('Failed to download or load model. Check your internet connection and try reloading. Details: ' + err.message);
+                    updateLoadProgress(0, 'Error loading model');
+                }
+            };
+
+            if (typeof Worker === 'undefined') {
+                activateFallback('Web Worker unavailable');
+                return;
+            }
+
+            try {
+                const workerUrl = buildWorkerBlobUrl();
+                worker = new Worker(workerUrl, { type: 'module' });
+
+                worker.onerror = (err) => {
+                    if (!engineReady) {
+                        activateFallback(err?.message || 'Worker startup failed');
+                    } else {
+                        console.error('Worker runtime error:', err);
+                        if (isGenerating) {
+                            finishGenerationUIWithError('Background voice worker encountered an error.');
+                        }
+                    }
+                };
+
+                worker.onmessage = (event) => {
+                    const msg = event.data;
+                    if (!msg) return;
+
+                    if (msg.type === 'INIT_PROGRESS') {
+                        realProgressReceived = true;
+                        updateLoadProgress(msg.percent, msg.message);
+                        if (!engineReady) {
+                            engineStatusText.textContent = `Loading (${msg.percent}%)`;
+                        }
+                    } else if (msg.type === 'INIT_READY') {
+                        markEngineReady();
+                    } else if (msg.type === 'INIT_ERROR') {
+                        activateFallback(msg.error);
+                    } else if (msg.type === 'GEN_PROGRESS') {
+                        if (msg.jobId !== activeJobId || !isGenerating) return;
+                        setGenerationProgress(msg.percent, msg.label, msg.sliceEndPercent);
+                    } else if (msg.type === 'GEN_COMPLETE') {
+                        if (msg.jobId !== activeJobId || !isGenerating) return;
+                        handleGenerationSuccess(msg.base64Data);
+                    } else if (msg.type === 'GEN_CANCELLED') {
+                        if (msg.jobId === activeJobId && isGenerating) {
+                            resetGenerationUI(true);
+                        }
+                    } else if (msg.type === 'GEN_ERROR') {
+                        if (msg.jobId !== activeJobId || !isGenerating) return;
+                        finishGenerationUIWithError('Synthesis failed: ' + msg.error);
+                    }
+                };
+
+                updateLoadProgress(5, 'Initializing background worker...');
+                worker.postMessage({ type: 'INIT' });
             } catch (err) {
-                clearInterval(progressInterval);
-                console.error("Initialization error:", err);
-                showError("Failed to download or load model. Check your internet connection and try reloading. Details: " + err.message);
-                updateLoadProgress(0, "Error loading model");
+                activateFallback(err?.message || 'Worker creation threw');
             }
         }
 
         function updateLoadProgress(percentage, text) {
-            loadProgressFill.style.width = percentage + "%";
-            loadProgressText.textContent = percentage + "% (" + text + ")";
+            loadProgressFill.style.width = percentage + '%';
+            loadProgressText.textContent = percentage + '% (' + text + ')';
+        }
+
+        // ----------------------------------------------------
+        // GENERATION 0-100% PROGRESS BAR CONTROLLER
+        // ----------------------------------------------------
+
+        function showGenerationProgressBar() {
+            if (hideProgressTimeout) {
+                clearTimeout(hideProgressTimeout);
+                hideProgressTimeout = null;
+            }
+            displayedProgress = 0;
+            sliceTargetMax = 5;
+            updateProgressDom(0, 'Preparing speech engine...');
+            genProgressWrapper.classList.add('visible');
+
+            if (progressTrickleTimer) clearInterval(progressTrickleTimer);
+            progressTrickleTimer = setInterval(() => {
+                if (!isGenerating) return;
+                const cap = Math.max(displayedProgress, sliceTargetMax - 1);
+                if (displayedProgress < cap) {
+                    const step = Math.max(0.4, (cap - displayedProgress) * 0.14);
+                    displayedProgress = Math.min(cap, displayedProgress + step);
+                    updateProgressDom(Math.floor(displayedProgress), null);
+                }
+            }, 180);
+        }
+
+        function setGenerationProgress(percent, label, sliceEndPercent) {
+            const clamped = Math.max(0, Math.min(100, percent));
+            if (clamped > displayedProgress) {
+                displayedProgress = clamped;
+            }
+            if (typeof sliceEndPercent === 'number') {
+                sliceTargetMax = Math.max(displayedProgress, Math.min(99, sliceEndPercent));
+            }
+            updateProgressDom(Math.round(displayedProgress), label);
+        }
+
+        function updateProgressDom(intPercent, label) {
+            const pct = Math.max(0, Math.min(100, intPercent));
+            genProgressFill.style.width = pct + '%';
+            genProgressPercent.textContent = pct + '%';
+            genProgressBar.setAttribute('aria-valuenow', String(pct));
+            if (label) {
+                genProgressLabel.textContent = label;
+            }
+        }
+
+        function completeAndHideProgressBar() {
+            if (progressTrickleTimer) {
+                clearInterval(progressTrickleTimer);
+                progressTrickleTimer = null;
+            }
+            displayedProgress = 100;
+            updateProgressDom(100, 'Complete!');
+            hideProgressTimeout = setTimeout(() => {
+                genProgressWrapper.classList.remove('visible');
+                updateProgressDom(0, 'Preparing speech engine...');
+                displayedProgress = 0;
+            }, 500);
+        }
+
+        function hideAndResetProgressBarImmediately() {
+            if (progressTrickleTimer) {
+                clearInterval(progressTrickleTimer);
+                progressTrickleTimer = null;
+            }
+            if (hideProgressTimeout) {
+                clearTimeout(hideProgressTimeout);
+                hideProgressTimeout = null;
+            }
+            genProgressWrapper.classList.remove('visible');
+            displayedProgress = 0;
+            sliceTargetMax = 0;
+            updateProgressDom(0, 'Preparing speech engine...');
         }
 
         // ----------------------------------------------------
         // STORAGE & DATA PERSISTENCE
         // ----------------------------------------------------
+
+        function getClipAudio(clip) {
+            if (!clip) return null;
+            return sessionAudioCache.get(clip.id) || clip.audioBase64 || null;
+        }
 
         function loadChatsFromStorage() {
             try {
@@ -1191,12 +2309,11 @@
                 if (stored) {
                     chats = JSON.parse(stored);
                 } else {
-                    // Seed initial demo chat
                     chats = [
                         {
                             id: 'chat_default',
                             title: 'Welcome Note',
-                            text: 'Welcome to Kokoro Voice! Kokoro is a lightweight, high-quality offline-first text-to-speech model. You can write any text in this area (up to 5000 characters), select one of our premium voice configurations (including American male/female and British male/female models), adjust the playback speed, and hit "Generate Speech" to generate stunning human-like audio.',
+                            text: 'Welcome to Kokoro Voice! Kokoro is a lightweight, high-quality text-to-speech model. "Notice how it pauses naturally," she explained, "at commas, periods, and quotation marks!" Are you ready to try it? This is REALLY expressive.',
                             voice: 'af_bella',
                             speed: 1.0,
                             history: []
@@ -1205,7 +2322,6 @@
                     saveChatsToStorage();
                 }
 
-                // Restore active chat selection
                 const storedActiveId = localStorage.getItem('kokoro_active_chat_id');
                 if (storedActiveId && chats.some(c => c.id === storedActiveId)) {
                     activeChatId = storedActiveId;
@@ -1217,8 +2333,8 @@
 
                 loadActiveChatIntoUI();
             } catch (err) {
-                console.error("Error reading localStorage", err);
-                showError("Could not retrieve workspace chats from browser storage.");
+                console.error('Error reading localStorage', err);
+                showError('Could not retrieve workspace chats from browser storage.');
             }
         }
 
@@ -1231,8 +2347,21 @@
                     localStorage.removeItem('kokoro_active_chat_id');
                 }
             } catch (err) {
-                console.error("Error writing localStorage", err);
-                showError("Local storage is full or disabled. Generated audio cache cannot be saved.");
+                // If audioBase64 payloads exceed WebView localStorage ~5MB quota, keep them in sessionAudioCache
+                try {
+                    const slimChats = chats.map(c => ({
+                        ...c,
+                        history: (c.history || []).map((h, idx) => {
+                            if (h.audioBase64) sessionAudioCache.set(h.id, h.audioBase64);
+                            return idx === 0 && h.audioBase64 && h.audioBase64.length < 1500000
+                                ? h
+                                : { ...h, audioBase64: null };
+                        })
+                    }));
+                    localStorage.setItem('kokoro_voice_chats', JSON.stringify(slimChats));
+                } catch (innerErr) {
+                    console.warn('localStorage quota exceeded, keeping audio in memory:', innerErr);
+                }
             }
         }
 
@@ -1244,12 +2373,11 @@
             chatListContainer.innerHTML = '';
             chats.forEach(chat => {
                 const isSelected = chat.id === activeChatId;
-                
+
                 const item = document.createElement('div');
                 item.className = 'chat-item' + (isSelected ? ' active' : '');
                 item.dataset.id = chat.id;
 
-                // Speech/Chat icon SVG
                 const iconContainer = document.createElement('div');
                 iconContainer.className = 'chat-item-icon';
                 iconContainer.innerHTML = `
@@ -1260,7 +2388,7 @@
 
                 const titleContainer = document.createElement('div');
                 titleContainer.className = 'chat-item-title-container';
-                
+
                 const titleLabel = document.createElement('span');
                 titleLabel.className = 'chat-item-title';
                 titleLabel.textContent = chat.title;
@@ -1268,26 +2396,24 @@
 
                 const deleteBtn = document.createElement('button');
                 deleteBtn.className = 'chat-delete-btn';
-                deleteBtn.title = "Delete Chat";
+                deleteBtn.title = 'Delete Chat';
                 deleteBtn.innerHTML = `
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 14px; height: 14px;">
                         <path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
                     </svg>
                 `;
 
-                // Handle item select click
                 item.addEventListener('click', (e) => {
                     if (e.target.closest('.chat-delete-btn') || e.target.closest('.chat-item-input')) return;
                     selectChat(chat.id);
                 });
 
-                // Double Click inline rename
                 item.addEventListener('dblclick', () => {
                     const input = document.createElement('input');
                     input.className = 'chat-item-input';
                     input.type = 'text';
                     input.value = chat.title;
-                    
+
                     titleContainer.innerHTML = '';
                     titleContainer.appendChild(input);
                     input.focus();
@@ -1311,7 +2437,6 @@
                     input.addEventListener('blur', finishRename);
                 });
 
-                // Delete click handler
                 deleteBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
                     deleteChat(chat.id);
@@ -1326,9 +2451,8 @@
 
         function loadActiveChatIntoUI() {
             if (!activeChatId) {
-                // UI default state
-                activeChatHeading.textContent = "No Workspace Open";
-                textInput.value = "";
+                activeChatHeading.textContent = 'No Workspace Open';
+                textInput.value = '';
                 textInput.disabled = true;
                 voiceSelect.disabled = true;
                 speedSlider.disabled = true;
@@ -1343,29 +2467,25 @@
             if (!chat) return;
 
             activeChatHeading.textContent = chat.title;
-            textInput.value = chat.text || "";
+            textInput.value = chat.text || '';
             textInput.disabled = false;
             voiceSelect.disabled = false;
             speedSlider.disabled = false;
-            generateBtn.disabled = false;
+            generateBtn.disabled = isGenerating;
             clearTextBtn.style.display = 'flex';
-            
-            // Sync voice and speed values
-            voiceSelect.value = chat.voice || "af_bella";
+
+            voiceSelect.value = chat.voice || 'af_bella';
             speedSlider.value = chat.speed || 1.0;
-            speedValueText.textContent = Number(speedSlider.value).toFixed(1) + "x";
+            speedValueText.textContent = Number(speedSlider.value).toFixed(1) + 'x';
 
-            // Character count sync
             updateCharacterCount();
-
-            // Render custom history and unload player if needed
             renderHistory(chat.history || []);
             unloadAudioPlayer();
         }
 
         function updateCharacterCount() {
             const count = textInput.value.length;
-            charCounter.textContent = count + " / 5000";
+            charCounter.textContent = count + ' / 5000';
             if (count >= 4900) {
                 charCounter.classList.add('warning');
             } else {
@@ -1374,7 +2494,6 @@
         }
 
         function selectChat(id) {
-            // Save state of current active chat first
             if (activeChatId) {
                 const currentChat = chats.find(c => c.id === activeChatId);
                 if (currentChat) {
@@ -1388,8 +2507,7 @@
             saveChatsToStorage();
             renderChatList();
             loadActiveChatIntoUI();
-            
-            // On mobile devices, auto close sidebar when selection changes
+
             if (window.innerWidth <= 768) {
                 closeSidebar();
             }
@@ -1397,10 +2515,10 @@
 
         function deleteChat(id) {
             if (chats.length <= 1) {
-                showError("You must keep at least one workspace open!");
+                showError('You must keep at least one workspace open!');
                 return;
             }
-            if (confirm("Are you sure you want to delete this workspace and all its generated audio files?")) {
+            if (confirm('Are you sure you want to delete this workspace and all its generated audio files?')) {
                 chats = chats.filter(c => c.id !== id);
                 if (activeChatId === id) {
                     activeChatId = chats[0].id;
@@ -1412,7 +2530,6 @@
         }
 
         function createNewChat() {
-            // Save state of current chat first
             if (activeChatId) {
                 const currentChat = chats.find(c => c.id === activeChatId);
                 if (currentChat) {
@@ -1441,105 +2558,15 @@
         }
 
         // ----------------------------------------------------
-        // VOICE GENERATION & MANAGEMENT
+        // VOICE GENERATION & MANAGEMENT (NON-BLOCKING)
         // ----------------------------------------------------
 
-        // Split text into chunks that fit into the model's phoneme context
-        function splitTextIntoChunks(text, maxChunkLen = 300) {
-            const rawSegments = text.split(/([.!?；。！？\n\r]+)/);
-            const chunks = [];
-            let currentChunk = "";
-
-            for (let i = 0; i < rawSegments.length; i++) {
-                const seg = rawSegments[i];
-                if (!seg) continue;
-                
-                if ((currentChunk + seg).length > maxChunkLen) {
-                    if (currentChunk.trim()) {
-                        chunks.push(currentChunk.trim());
-                    }
-                    currentChunk = seg;
-                } else {
-                    currentChunk += seg;
-                }
-            }
-            if (currentChunk.trim()) {
-                chunks.push(currentChunk.trim());
-            }
-
-            const finalChunks = [];
-            for (const chunk of chunks) {
-                if (chunk.length <= maxChunkLen) {
-                    finalChunks.push(chunk);
-                } else {
-                    const subSegments = chunk.split(/([,，\s]+)/);
-                    let subChunk = "";
-                    for (const sub of subSegments) {
-                        if ((subChunk + sub).length > maxChunkLen) {
-                            if (subChunk.trim()) finalChunks.push(subChunk.trim());
-                            subChunk = sub;
-                        } else {
-                            subChunk += sub;
-                        }
-                    }
-                    if (subChunk.trim()) finalChunks.push(subChunk.trim());
-                }
-            }
-            
-            return finalChunks.filter(c => c.length > 0);
-        }
-
-        // Custom WAV file generator from float32 samples (Mono, 24000Hz)
-        function pcmToWav(samples, sampleRate) {
-            const buffer = new ArrayBuffer(44 + samples.length * 2);
-            const view = new DataView(buffer);
-
-            const writeString = (v, offset, str) => {
-                for (let i = 0; i < str.length; i++) {
-                    v.setUint8(offset + i, str.charCodeAt(i));
-                }
-            };
-
-            /* RIFF identifier */
-            writeString(view, 0, 'RIFF');
-            /* file length */
-            view.setUint32(4, 36 + samples.length * 2, true);
-            /* RIFF type */
-            writeString(view, 8, 'WAVE');
-            /* format chunk identifier */
-            writeString(view, 12, 'fmt ');
-            /* format chunk length */
-            view.setUint32(16, 16, true);
-            /* sample format (raw PCM) */
-            view.setUint16(20, 1, true);
-            /* channel count (Mono) */
-            view.setUint16(22, 1, true);
-            /* sample rate */
-            view.setUint32(24, sampleRate, true);
-            /* byte rate (sample rate * block align) */
-            view.setUint32(28, sampleRate * 2, true);
-            /* block align (channel count * bytes per sample) */
-            view.setUint16(32, 2, true);
-            /* bits per sample */
-            view.setUint16(34, 16, true);
-            /* data chunk identifier */
-            writeString(view, 36, 'data');
-            /* data chunk length */
-            view.setUint32(40, samples.length * 2, true);
-
-            // Float32 to 16-bit PCM conversion
-            let offset = 44;
-            for (let i = 0; i < samples.length; i++, offset += 2) {
-                let s = Math.max(-1, Math.min(1, samples[i]));
-                view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-            }
-
-            return new Blob([view], { type: 'audio/wav' });
-        }
-
-        // Native share-integrated downloader with direct base64 fallback
         function triggerDownload(base64Data, filename) {
             try {
+                if (!base64Data) {
+                    showError('Audio data is no longer available in memory.');
+                    return;
+                }
                 if (window.AndroidInterface && typeof window.AndroidInterface.downloadWav === 'function') {
                     window.AndroidInterface.downloadWav(base64Data, filename);
                 } else {
@@ -1554,138 +2581,206 @@
                     URL.revokeObjectURL(url);
                 }
             } catch (e) {
-                showError("Could not download file: " + e.message);
+                showError('Could not download file: ' + e.message);
             }
         }
 
-        async function startVoiceGeneration() {
-            if (!tts) {
-                showError("Voice generator engine is not initialized yet. Please wait.");
+        function yieldToMain() {
+            return new Promise(resolve => setTimeout(resolve, 0));
+        }
+
+        let pendingGenerationMeta = null;
+
+        async function runFallbackGeneration(jobId, text, voiceId, speed) {
+            try {
+                setGenerationProgress(2, 'Analyzing punctuation, quotes & emphasis...', 5);
+                await yieldToMain();
+
+                const segments = fallbackCore.segmentTextForProsody(text, speed);
+                if (segments.length === 0) throw new Error('No speakable text found.');
+
+                const totalChars = segments.reduce((sum, s) => sum + s.speakText.length, 0) || 1;
+                const processedChunks = [];
+                let samplingRate = 24000;
+                let completedChars = 0;
+
+                for (let i = 0; i < segments.length; i++) {
+                    if (activeJobId !== jobId || !isGenerating) return;
+                    const seg = segments[i];
+                    const startPct = 5 + (completedChars / totalChars) * 80;
+                    const endPct = 5 + ((completedChars + seg.speakText.length) / totalChars) * 80;
+
+                    setGenerationProgress(Math.round(startPct), `Synthesizing phrase ${i + 1} of ${segments.length}...`, Math.round(endPct));
+                    await yieldToMain();
+
+                    const speech = await fallbackTts.generate(seg.speakText, {
+                        voice: voiceId,
+                        speed: seg.effectiveSpeed
+                    });
+
+                    if (activeJobId !== jobId || !isGenerating) return;
+
+                    if (speech && speech.audio && speech.audio.length > 0) {
+                        samplingRate = speech.sampling_rate || samplingRate;
+                        const trimmed = fallbackCore.trimSilenceAndFade(speech.audio, samplingRate);
+                        const contoured = fallbackCore.applyPitchContourWSOLA(trimmed, samplingRate, seg);
+                        processedChunks.push({ pcm: contoured, pauseAfterMs: seg.pauseAfterMs });
+                    }
+                    completedChars += seg.speakText.length;
+                    setGenerationProgress(Math.round(endPct), `Synthesized phrase ${i + 1} of ${segments.length}`, Math.round(endPct));
+                    await yieldToMain();
+                }
+
+                if (activeJobId !== jobId || !isGenerating) return;
+                setGenerationProgress(88, 'Applying natural speech pacing...', 93);
+                await yieldToMain();
+
+                let totalSamples = 0;
+                const pauseSampleCounts = processedChunks.map((chunk, idx) => {
+                    const isLast = idx === processedChunks.length - 1;
+                    const ms = isLast ? Math.min(chunk.pauseAfterMs, 120) : chunk.pauseAfterMs;
+                    return Math.max(0, Math.round((ms / 1000) * samplingRate));
+                });
+
+                for (let i = 0; i < processedChunks.length; i++) {
+                    totalSamples += processedChunks[i].pcm.length + pauseSampleCounts[i];
+                }
+
+                const mergedPcm = new Float32Array(totalSamples);
+                let offset = 0;
+                for (let i = 0; i < processedChunks.length; i++) {
+                    mergedPcm.set(processedChunks[i].pcm, offset);
+                    offset += processedChunks[i].pcm.length + pauseSampleCounts[i];
+                }
+
+                setGenerationProgress(94, 'Encoding WAV audio...', 99);
+                await yieldToMain();
+
+                const wavBuffer = fallbackCore.pcmToWavBuffer(mergedPcm, samplingRate);
+                const base64Data = await fallbackCore.blobToDataUrl(new Blob([wavBuffer], { type: 'audio/wav' }));
+
+                if (activeJobId !== jobId || !isGenerating) return;
+                handleGenerationSuccess(base64Data);
+            } catch (err) {
+                if (activeJobId === jobId && isGenerating) {
+                    finishGenerationUIWithError('Synthesis failed: ' + err.message);
+                }
+            }
+        }
+
+        function startVoiceGeneration() {
+            if (!engineReady) {
+                showError('Voice generator engine is not initialized yet. Please wait.');
                 return;
             }
             const text = textInput.value.trim();
             if (!text) {
-                showError("Please enter some text to generate.");
+                showError('Please enter some text to generate.');
                 return;
             }
-
-            // Set UI generating state
-            isGenerating = true;
-            generationAborted = false;
-            generateBtn.disabled = true;
-            cancelBtn.style.display = 'flex';
-            errorBanner.style.display = 'none';
+            if (isGenerating) return;
 
             const voiceId = voiceSelect.value;
             const speed = parseFloat(speedSlider.value);
+            const jobId = ++jobCounter;
+            activeJobId = jobId;
 
-            try {
-                // Split text into chunks
-                const chunks = splitTextIntoChunks(text, 300);
-                if (chunks.length === 0) {
-                    throw new Error("Text split resulted in empty chunks.");
-                }
+            pendingGenerationMeta = {
+                chatId: activeChatId,
+                text,
+                voiceId,
+                speed
+            };
 
-                const pcmArrays = [];
-                let samplingRate = 24000;
+            isGenerating = true;
+            generateBtn.disabled = true;
+            generateBtnText.textContent = 'Generating...';
+            cancelBtn.style.display = 'flex';
+            errorBanner.style.display = 'none';
+            showGenerationProgressBar();
 
-                for (let i = 0; i < chunks.length; i++) {
-                    if (generationAborted) {
-                        break;
-                    }
-
-                    // Update UI button with progress
-                    generateBtnText.textContent = `Synthesizing (${i + 1}/${chunks.length})...`;
-                    
-                    const chunkText = chunks[i];
-                    const speech = await tts.generate(chunkText, { voice: voiceId });
-                    
-                    if (speech && speech.audio) {
-                        pcmArrays.push(speech.audio);
-                        samplingRate = speech.sampling_rate || samplingRate;
-                    }
-                }
-
-                if (generationAborted) {
-                    console.log("Generation process discarded because it was canceled.");
-                    return;
-                }
-
-                // Concatenate Float32Arrays
-                generateBtnText.textContent = "Merging Audio...";
-                const totalLength = pcmArrays.reduce((sum, arr) => sum + arr.length, 0);
-                const mergedPcm = new Float32Array(totalLength);
-                let offset = 0;
-                for (const arr of pcmArrays) {
-                    mergedPcm.set(arr, offset);
-                    offset += arr.length;
-                }
-
-                // Convert to WAV Blob
-                const blob = pcmToWav(mergedPcm, samplingRate);
-                const base64Data = await blobToBase64(blob);
-
-                // Add to chat history
-                const currentChat = chats.find(c => c.id === activeChatId);
-                if (currentChat) {
-                    const snippet = text.length > 55 ? text.substring(0, 55) + "..." : text;
-                    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                    
-                    const newHistoryItem = {
-                        id: 'clip_' + Date.now(),
-                        text: snippet,
-                        fullText: text,
-                        voice: voiceId,
-                        speed: speed,
-                        audioBase64: base64Data,
-                        timestamp: timestamp
-                    };
-
-                    // Insert to front, max 3 items
-                    currentChat.history = currentChat.history || [];
-                    currentChat.history.unshift(newHistoryItem);
-                    if (currentChat.history.length > 3) {
-                        currentChat.history.pop();
-                    }
-
-                    saveChatsToStorage();
-                    renderHistory(currentChat.history);
-                    
-                    // Auto-load newly generated clip into the player
-                    loadAudioClip(newHistoryItem);
-                }
-
-            } catch (err) {
-                console.error("Speech Synthesis Error:", err);
-                showError("Synthesis failed: " + err.message);
-            } finally {
-                // Reset UI state
-                isGenerating = false;
-                generateBtn.disabled = false;
-                generateBtnText.textContent = "Generate Speech";
-                cancelBtn.style.display = 'none';
+            if (!useFallbackEngine && worker) {
+                worker.postMessage({
+                    type: 'GENERATE',
+                    jobId,
+                    text,
+                    voiceId,
+                    speed
+                });
+            } else {
+                runFallbackGeneration(jobId, text, voiceId, speed);
             }
         }
 
-        function cancelVoiceGeneration() {
-            generationAborted = true;
+        function handleGenerationSuccess(base64Data) {
+            const meta = pendingGenerationMeta;
+            pendingGenerationMeta = null;
+
+            const targetChat = chats.find(c => c.id === (meta?.chatId || activeChatId));
+            if (targetChat && meta) {
+                const snippet = meta.text.length > 55 ? meta.text.substring(0, 55) + '...' : meta.text;
+                const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                const newHistoryItem = {
+                    id: 'clip_' + Date.now(),
+                    text: snippet,
+                    fullText: meta.text,
+                    voice: meta.voiceId,
+                    speed: meta.speed,
+                    generatedWithSpeed: meta.speed,
+                    audioBase64: base64Data,
+                    timestamp
+                };
+
+                sessionAudioCache.set(newHistoryItem.id, base64Data);
+                targetChat.history = targetChat.history || [];
+                targetChat.history.unshift(newHistoryItem);
+                if (targetChat.history.length > 3) {
+                    const removed = targetChat.history.pop();
+                    if (removed) sessionAudioCache.delete(removed.id);
+                }
+
+                saveChatsToStorage();
+                if (targetChat.id === activeChatId) {
+                    renderHistory(targetChat.history);
+                    loadAudioClip(newHistoryItem);
+                }
+            }
+
             isGenerating = false;
+            activeJobId = null;
             generateBtn.disabled = false;
-            generateBtnText.textContent = "Generate Speech";
+            generateBtnText.textContent = 'Generate Speech';
             cancelBtn.style.display = 'none';
-            showError("Speech synthesis canceled by user.");
+            completeAndHideProgressBar();
         }
 
-        function blobToBase64(blob) {
-            return new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onloadend = () => resolve(reader.result);
-                reader.onerror = reject;
-                reader.readAsDataURL(blob);
-            });
+        function resetGenerationUI(showCancelBanner) {
+            isGenerating = false;
+            activeJobId = null;
+            pendingGenerationMeta = null;
+            generateBtn.disabled = false;
+            generateBtnText.textContent = 'Generate Speech';
+            cancelBtn.style.display = 'none';
+            hideAndResetProgressBarImmediately();
+            if (showCancelBanner) {
+                showError('Speech synthesis canceled by user.');
+            }
         }
 
-        // Convert base64 dataUrl back to download blob
+        function finishGenerationUIWithError(message) {
+            resetGenerationUI(false);
+            showError(message);
+        }
+
+        function cancelVoiceGeneration() {
+            if (!isGenerating) return;
+            const jobToCancel = activeJobId;
+            if (!useFallbackEngine && worker && jobToCancel != null) {
+                worker.postMessage({ type: 'CANCEL', jobId: jobToCancel });
+            }
+            resetGenerationUI(true);
+        }
+
         function base64ToBlob(base64DataUrl) {
             const arr = base64DataUrl.split(',');
             const mime = arr[0].match(/:(.*?);/)[1];
@@ -1702,43 +2797,54 @@
         // CUSTOM PLAYER ENGINE
         // ----------------------------------------------------
 
+        function getActiveClipObj() {
+            const chat = chats.find(c => c.id === activeChatId);
+            if (!chat || !chat.history) return null;
+            return chat.history.find(h => h.id === currentLoadedClipId) || null;
+        }
+
+        function computeEffectivePlaybackRate(clip, sliderSpeed) {
+            if (clip && typeof clip.generatedWithSpeed === 'number' && clip.generatedWithSpeed > 0) {
+                return Math.max(0.5, Math.min(2.0, sliderSpeed / clip.generatedWithSpeed));
+            }
+            return Math.max(0.5, Math.min(2.0, sliderSpeed));
+        }
+
         function loadAudioClip(historyItem) {
+            const audioSrc = getClipAudio(historyItem);
+            if (!audioSrc) {
+                showError('Audio data for this clip is no longer cached. Please regenerate.');
+                return;
+            }
             currentLoadedClipId = historyItem.id;
-            
-            // Set source
-            nativeAudio.src = historyItem.audioBase64;
+
+            nativeAudio.src = audioSrc;
             nativeAudio.load();
 
-            // Set playback speed
-            nativeAudio.playbackRate = historyItem.speed;
+            const currentSpeed = parseFloat(speedSlider.value) || historyItem.speed || 1.0;
+            nativeAudio.playbackRate = computeEffectivePlaybackRate(historyItem, currentSpeed);
 
-            // Enable player controls
             playBtn.disabled = false;
             seekSlider.disabled = false;
             muteBtn.disabled = false;
             volumeSlider.disabled = false;
             downloadBtn.disabled = false;
 
-            // Reset seek sliders and timer visuals
             seekSlider.value = 0;
-            timeCurrent.textContent = "00:00";
-            
-            // Prepare download configuration
+            timeCurrent.textContent = '00:00';
+
             downloadBtn.onclick = () => {
                 const filename = `kokoro-${historyItem.voice}-${Date.now()}.wav`;
-                triggerDownload(historyItem.audioBase64, filename);
+                triggerDownload(getClipAudio(historyItem), filename);
             };
 
-            // Play instantly
             playAudio();
-
-            // Highlight in history
             highlightPlayingHistoryItem(historyItem.id);
         }
 
         function unloadAudioPlayer() {
             nativeAudio.pause();
-            nativeAudio.src = "";
+            nativeAudio.src = '';
             currentLoadedClipId = null;
 
             playBtn.disabled = true;
@@ -1749,18 +2855,21 @@
 
             playIcon.setAttribute('d', PLAY_SVG_PATH);
             seekSlider.value = 0;
-            timeCurrent.textContent = "00:00";
-            timeDuration.textContent = "00:00";
+            timeCurrent.textContent = '00:00';
+            timeDuration.textContent = '00:00';
 
             highlightPlayingHistoryItem(null);
         }
 
         function playAudio() {
             try {
-                nativeAudio.play();
+                const playPromise = nativeAudio.play();
+                if (playPromise && typeof playPromise.catch === 'function') {
+                    playPromise.catch(err => console.warn('Playback interrupted:', err));
+                }
                 playIcon.setAttribute('d', PAUSE_SVG_PATH);
             } catch (err) {
-                console.error("Play failed", err);
+                console.error('Play failed', err);
             }
         }
 
@@ -1787,11 +2896,7 @@
         function updateVolume() {
             const vol = parseFloat(volumeSlider.value);
             nativeAudio.volume = vol;
-            if (vol === 0) {
-                setMuteIcon(true);
-            } else {
-                setMuteIcon(false);
-            }
+            setMuteIcon(vol === 0);
         }
 
         function toggleMute() {
@@ -1817,10 +2922,10 @@
         }
 
         function formatTime(secs) {
-            if (isNaN(secs)) return "00:00";
+            if (isNaN(secs)) return '00:00';
             const m = Math.floor(secs / 60);
             const s = Math.floor(secs % 60);
-            return (m < 10 ? "0" + m : m) + ":" + (s < 10 ? "0" + s : s);
+            return (m < 10 ? '0' + m : m) + ':' + (s < 10 ? '0' + s : s);
         }
 
         // ----------------------------------------------------
@@ -1853,13 +2958,13 @@
 
                 const meta = document.createElement('div');
                 meta.className = 'history-meta';
-                
+
                 const voiceSpan = document.createElement('span');
                 voiceSpan.className = 'history-meta-voice';
                 voiceSpan.textContent = clip.voice;
 
                 const speedSpan = document.createElement('span');
-                speedSpan.textContent = `Speed: ${clip.speed.toFixed(1)}x`;
+                speedSpan.textContent = `Speed: ${Number(clip.speed || 1).toFixed(1)}x`;
 
                 const timeSpan = document.createElement('span');
                 timeSpan.textContent = clip.timestamp;
@@ -1873,12 +2978,10 @@
                 const actions = document.createElement('div');
                 actions.className = 'history-actions';
 
-                // Play / Pause history clip
                 const miniPlayBtn = document.createElement('button');
                 miniPlayBtn.className = 'btn-history-action play-pause-clip';
-                miniPlayBtn.title = "Play this clip";
-                
-                // Set play/pause icon state
+                miniPlayBtn.title = 'Play this clip';
+
                 if (isPlaying) {
                     miniPlayBtn.innerHTML = `
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" style="width: 16px; height: 16px;">
@@ -1901,10 +3004,9 @@
                     }
                 });
 
-                // Download clip file directly
                 const miniDlBtn = document.createElement('button');
                 miniDlBtn.className = 'btn-history-action';
-                miniDlBtn.title = "Download WAV file";
+                miniDlBtn.title = 'Download WAV file';
                 miniDlBtn.innerHTML = `
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 16px; height: 16px;">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
@@ -1912,13 +3014,12 @@
                 `;
                 miniDlBtn.addEventListener('click', () => {
                     const filename = `kokoro-${clip.voice}-${Date.now()}.wav`;
-                    triggerDownload(clip.audioBase64, filename);
+                    triggerDownload(getClipAudio(clip), filename);
                 });
 
-                // Delete history item
                 const miniDelBtn = document.createElement('button');
                 miniDelBtn.className = 'btn-history-action delete-clip';
-                miniDelBtn.title = "Delete clip from storage";
+                miniDelBtn.title = 'Delete clip from storage';
                 miniDelBtn.innerHTML = `
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 16px; height: 16px;">
                         <path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
@@ -1931,7 +3032,7 @@
                 actions.appendChild(miniPlayBtn);
                 actions.appendChild(miniDlBtn);
                 actions.appendChild(miniDelBtn);
-                
+
                 card.appendChild(details);
                 card.appendChild(actions);
                 container.appendChild(card);
@@ -1951,10 +3052,11 @@
         }
 
         function deleteHistoryClip(clipId) {
-            if (confirm("Are you sure you want to delete this generated clip from storage?")) {
+            if (confirm('Are you sure you want to delete this generated clip from storage?')) {
                 const currentChat = chats.find(c => c.id === activeChatId);
                 if (currentChat) {
                     currentChat.history = currentChat.history.filter(h => h.id !== clipId);
+                    sessionAudioCache.delete(clipId);
                     saveChatsToStorage();
                     renderHistory(currentChat.history);
 
@@ -1970,10 +3072,8 @@
         // ----------------------------------------------------
 
         function setupEventListeners() {
-            // Textarea events
             textInput.addEventListener('input', () => {
                 updateCharacterCount();
-                // Persist current input text locally
                 const chat = chats.find(c => c.id === activeChatId);
                 if (chat) {
                     chat.text = textInput.value;
@@ -1992,24 +3092,21 @@
                 textInput.focus();
             });
 
-            // Speed slider
             speedSlider.addEventListener('input', () => {
                 const speed = parseFloat(speedSlider.value);
-                speedValueText.textContent = speed.toFixed(1) + "x";
-                
+                speedValueText.textContent = speed.toFixed(1) + 'x';
+
                 const chat = chats.find(c => c.id === activeChatId);
                 if (chat) {
                     chat.speed = speed;
                     saveChatsToStorage();
                 }
 
-                // If currently playing, update live speed
                 if (currentLoadedClipId) {
-                    nativeAudio.playbackRate = speed;
+                    nativeAudio.playbackRate = computeEffectivePlaybackRate(getActiveClipObj(), speed);
                 }
             });
 
-            // Voice selection
             voiceSelect.addEventListener('change', () => {
                 const chat = chats.find(c => c.id === activeChatId);
                 if (chat) {
@@ -2018,12 +3115,10 @@
                 }
             });
 
-            // Action Buttons
             generateBtn.addEventListener('click', startVoiceGeneration);
             cancelBtn.addEventListener('click', cancelVoiceGeneration);
             newChatBtn.addEventListener('click', createNewChat);
 
-            // Native HTML5 Player bindings
             nativeAudio.addEventListener('timeupdate', () => {
                 if (nativeAudio.duration) {
                     const pct = (nativeAudio.currentTime / nativeAudio.duration) * 100;
@@ -2039,16 +3134,14 @@
             nativeAudio.addEventListener('ended', () => {
                 playIcon.setAttribute('d', PLAY_SVG_PATH);
                 seekSlider.value = 0;
-                timeCurrent.textContent = "00:00";
-                
-                // Re-render history list to update mini play buttons
+                timeCurrent.textContent = '00:00';
+
                 const chat = chats.find(c => c.id === activeChatId);
                 if (chat) {
                     renderHistory(chat.history);
                 }
             });
 
-            // Double check native updates play icons as well
             nativeAudio.addEventListener('play', () => {
                 playIcon.setAttribute('d', PAUSE_SVG_PATH);
                 const chat = chats.find(c => c.id === activeChatId);
@@ -2061,23 +3154,19 @@
                 if (chat) renderHistory(chat.history);
             });
 
-            // Player UI events
             playBtn.addEventListener('click', togglePlayPause);
             seekSlider.addEventListener('input', seekAudio);
             volumeSlider.addEventListener('input', updateVolume);
             muteBtn.addEventListener('click', toggleMute);
 
-            // Skip inspection screen
             skipBtn.addEventListener('click', () => {
                 loadingOverlay.classList.add('hidden');
             });
 
-            // Mobile sliding drawer triggers
             menuToggle.addEventListener('click', openSidebar);
             sidebarOverlay.addEventListener('click', closeSidebar);
         }
 
-        // Sidebar sliding actions
         function openSidebar() {
             appSidebar.classList.add('open');
             sidebarOverlay.classList.add('visible');
@@ -2088,12 +3177,10 @@
             sidebarOverlay.classList.remove('visible');
         }
 
-        // Show/Hide error banner at the top of workspace
         function showError(msg) {
             errorBannerMsg.textContent = msg;
             errorBanner.style.display = 'flex';
-            
-            // Auto hide after 8 seconds
+
             setTimeout(() => {
                 errorBanner.style.display = 'none';
             }, 8000);
